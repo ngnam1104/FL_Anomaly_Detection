@@ -88,6 +88,85 @@ def _partition_entity_sequences(
     return sensor_parts, sensor_entities
 
 
+def _dirichlet_partition_entity_rows(
+    parts: list[np.ndarray],
+    entity_ids: list[str],
+    sensor_count: int,
+    alpha: float,
+    seed: int,
+) -> tuple[list[np.ndarray], float]:
+    """Partition source-entity rows once across sensors using Dirichlet(alpha)."""
+
+    if sensor_count <= 0:
+        raise ValueError("sensor_count must be positive")
+    if alpha <= 0.0:
+        raise ValueError("Dirichlet alpha must be positive")
+    total_rows = sum(map(len, parts))
+    if total_rows < sensor_count:
+        raise ValueError(
+            f"Requested {sensor_count} sensors but only {total_rows} rows are available"
+        )
+
+    rng = np.random.RandomState(seed)
+    client_chunks: list[list[tuple[int, np.ndarray]]] = [
+        [] for _ in range(sensor_count)
+    ]
+    entity_counts = np.zeros((sensor_count, len(parts)), dtype=np.int64)
+    for entity_index, part in enumerate(parts):
+        order = rng.permutation(len(part))
+        probabilities = rng.dirichlet(np.full(sensor_count, float(alpha)))
+        counts = rng.multinomial(len(part), probabilities)
+        offset = 0
+        for sensor_id, count in enumerate(counts):
+            if count:
+                indices = order[offset : offset + count]
+                client_chunks[sensor_id].append((entity_index, part[indices]))
+                entity_counts[sensor_id, entity_index] += count
+            offset += count
+
+    # Strongly non-IID draws can leave clients empty. Move one row from the
+    # largest donor without duplication so all physical sensors participate.
+    client_sizes = entity_counts.sum(axis=1)
+    for empty_sensor in np.flatnonzero(client_sizes == 0):
+        donor = int(np.argmax(client_sizes))
+        if client_sizes[donor] <= 1:
+            raise ValueError("Unable to make every sensor partition non-empty")
+        donor_chunk_index = max(
+            range(len(client_chunks[donor])),
+            key=lambda index: len(client_chunks[donor][index][1]),
+        )
+        entity_index, donor_chunk = client_chunks[donor][donor_chunk_index]
+        moved = donor_chunk[-1:].copy()
+        remaining = donor_chunk[:-1]
+        if len(remaining):
+            client_chunks[donor][donor_chunk_index] = (entity_index, remaining)
+        else:
+            client_chunks[donor].pop(donor_chunk_index)
+        client_chunks[empty_sensor].append((entity_index, moved))
+        entity_counts[donor, entity_index] -= 1
+        entity_counts[empty_sensor, entity_index] += 1
+        client_sizes[donor] -= 1
+        client_sizes[empty_sensor] = 1
+
+    sensor_parts = []
+    for chunks in client_chunks:
+        data = np.concatenate([chunk for _, chunk in chunks], axis=0)
+        sensor_parts.append(data[rng.permutation(len(data))])
+
+    if len(entity_ids) > 1:
+        proportions = entity_counts / entity_counts.sum(axis=1, keepdims=True)
+        log_proportions = np.zeros_like(proportions)
+        positive = proportions > 0.0
+        log_proportions[positive] = np.log(proportions[positive])
+        entropies = -np.sum(proportions * log_proportions, axis=1) / np.log(
+            len(entity_ids)
+        )
+        mean_entropy = float(np.mean(entropies))
+    else:
+        mean_entropy = 0.0
+    return sensor_parts, mean_entropy
+
+
 def make_synthetic(
     sensor_count: int,
     *,
@@ -250,9 +329,13 @@ def _find_telemanom_root(root: Path) -> Path:
 
 
 def _load_telemanom_bundle(
-    root: Path, dataset: str, sensor_count: int
+    root: Path,
+    dataset: str,
+    sensor_count: int,
+    seed: int,
+    dirichlet_alpha: float | None,
 ) -> DataBundle:
-    """Load each SMAP/MSL telemetry channel as one physical FL client."""
+    """Load and partition SMAP/MSL telemetry channels for physical sensors."""
 
     base = _find_telemanom_root(root)
     with (base / "labeled_anomalies.csv").open(
@@ -324,9 +407,26 @@ def _load_telemanom_bundle(
     mean = pooled_train.mean(axis=0, keepdims=True)
     std = pooled_train.std(axis=0, keepdims=True)
     std[std < 1e-6] = 1.0
-    sensor_parts, sensor_channel_ids = _partition_entity_sequences(
-        train_parts, channel_ids, sensor_count
-    )
+    if dirichlet_alpha is None:
+        sensor_parts, sensor_channel_ids = _partition_entity_sequences(
+            train_parts, channel_ids, sensor_count
+        )
+        partition_details = {
+            "partition_scheme": "contiguous-entity-shards",
+            "sensor_channel_ids": sensor_channel_ids,
+        }
+    else:
+        sensor_parts, mean_entropy = _dirichlet_partition_entity_rows(
+            train_parts,
+            channel_ids,
+            sensor_count,
+            dirichlet_alpha,
+            seed,
+        )
+        partition_details = {
+            "partition_scheme": "source-entity-dirichlet",
+            "mean_normalised_client_entropy": mean_entropy,
+        }
     sensor_train = {
         sensor_id: torch.as_tensor((part - mean) / std, dtype=torch.float32)
         for sensor_id, part in enumerate(sensor_parts)
@@ -342,13 +442,16 @@ def _load_telemanom_bundle(
         ),
         test_x=torch.as_tensor((test - mean) / std, dtype=torch.float32),
         test_y=np.concatenate(labels),
+        partition_alpha=(
+            float(dirichlet_alpha) if dirichlet_alpha is not None else None
+        ),
         details={
             "entities": len(sensor_train),
             "source_entities": len(channel_ids),
             "channel_ids": channel_ids,
-            "sensor_channel_ids": sensor_channel_ids,
             "anomaly_segments": anomaly_segments,
-            "source_layout": "telemanom-contiguous-sensor-shards",
+            "source_layout": "telemanom-per-channel",
+            **partition_details,
         },
     )
 
@@ -359,8 +462,9 @@ def load_real_benchmark(
     sensor_count: int,
     *,
     seed: int = 42,
+    dirichlet_alpha: float | None = None,
 ) -> DataBundle:
-    """Load SMD/SMAP/MSL from standard processed NumPy arrays or raw SMD."""
+    """Load real data; Dirichlet modes require raw per-channel Telemanom."""
 
     dataset = name.upper()
     root = Path(data_root)
@@ -368,9 +472,16 @@ def load_real_benchmark(
         return _load_smd_raw_bundle(root, sensor_count)
     if dataset in {"SMAP", "MSL"}:
         try:
-            return _load_telemanom_bundle(root, dataset, sensor_count)
+            return _load_telemanom_bundle(
+                root,
+                dataset,
+                sensor_count,
+                seed,
+                dirichlet_alpha,
+            )
         except FileNotFoundError:
-            pass
+            if dirichlet_alpha is not None:
+                raise
     try:
         train, test, labels = _load_processed(root, dataset)
     except FileNotFoundError:
@@ -394,6 +505,7 @@ def load_real_benchmark(
         validation_normal=torch.as_tensor(validation, dtype=torch.float32),
         test_x=torch.as_tensor(test, dtype=torch.float32),
         test_y=labels,
+        partition_alpha=None,
         details={
             "entities": int(sensor_count),
             "source_layout": "processed-numpy",

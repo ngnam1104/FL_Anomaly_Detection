@@ -131,16 +131,18 @@ def run_real(cli: argparse.Namespace) -> None:
 
     seeds = SEEDS[:1] if cli.quick else SEEDS
     for dataset in ("SMAP", "MSL"):
-        for method in REAL_METHODS:
-            for seed in seeds:
-                args = _base_args(cli, "real")
-                args.dataset = dataset
-                args.sensors = 100
-                args.fogs = 10
-                args.baseline = method
-                args.seed = seed
-                args.rounds = 2 if cli.quick else 30
-                run_experiment(args)
+        for alpha in (0.1, 1.0e4):
+            for method in REAL_METHODS:
+                for seed in seeds:
+                    args = _base_args(cli, "real")
+                    args.dataset = dataset
+                    args.sensors = 100
+                    args.fogs = 10
+                    args.baseline = method
+                    args.seed = seed
+                    args.dirichlet_alpha = alpha
+                    args.rounds = 2 if cli.quick else 30
+                    run_experiment(args)
 
 
 if __name__ == "__main__":

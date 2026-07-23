@@ -50,6 +50,7 @@ on_error() {
 trap on_error ERR
 
 echo "action=${ACTION} datasets=SMAP,MSL sensors=100 fogs=10"
+echo "dirichlet_alpha=0.1,10000"
 echo "baselines=centralized,fedavg,fedprox,hfl-nocoop,hfl-selective,hfl-nearest"
 echo "workers=${WORKERS} quick=${QUICK}"
 echo "data_root=${DATA_ROOT} output_root=${OUTPUT_ROOT}"
@@ -91,15 +92,29 @@ for name, expected_dim in (
     ("SMAP", 25),
     ("MSL", 55),
 ):
-    bundle = load_real_benchmark(name, root, 100, seed=42)
-    assert len(bundle.sensor_train) == 100
-    assert bundle.input_dim == expected_dim
-    print(
-        f"validated {name}: sensors=100 source_entities="
-        f"{bundle.details['source_entities']} D={bundle.input_dim} "
-        f"train={sum(map(len, bundle.sensor_train.values()))} "
-        f"validation={len(bundle.validation_normal)} "
-        f"test={len(bundle.test_x)} anomalies={int(bundle.test_y.sum())}"
+    entropies = []
+    for alpha in (0.1, 1.0e4):
+        bundle = load_real_benchmark(
+            name,
+            root,
+            100,
+            seed=42,
+            dirichlet_alpha=alpha,
+        )
+        assert len(bundle.sensor_train) == 100
+        assert bundle.input_dim == expected_dim
+        entropy = bundle.details["mean_normalised_client_entropy"]
+        entropies.append(entropy)
+        print(
+            f"validated {name}: alpha={alpha:g} sensors=100 "
+            f"source_entities={bundle.details['source_entities']} "
+            f"D={bundle.input_dim} entropy={entropy:.4f} "
+            f"train={sum(map(len, bundle.sensor_train.values()))} "
+            f"validation={len(bundle.validation_normal)} "
+            f"test={len(bundle.test_x)} anomalies={int(bundle.test_y.sum())}"
+        )
+    assert entropies[0] < entropies[1], (
+        f"{name}: alpha=0.1 should be more non-IID than alpha=1e4"
     )
 PY
 }

@@ -172,7 +172,8 @@ def test_telemanom_keeps_one_channel_per_client(tmp_path):
     assert bundle.input_dim == 25
     assert len(bundle.sensor_train) == 2
     assert bundle.details["channel_ids"] == ["A-1", "A-2"]
-    assert bundle.details["source_layout"] == "telemanom-contiguous-sensor-shards"
+    assert bundle.details["source_layout"] == "telemanom-per-channel"
+    assert bundle.details["partition_scheme"] == "contiguous-entity-shards"
     assert len(bundle.test_y) == 20
     assert int(bundle.test_y.sum()) == 3
 
@@ -206,6 +207,42 @@ def test_telemanom_splits_entities_into_requested_sensor_count(tmp_path):
     assert bundle.details["source_entities"] == 2
     assert len(bundle.details["sensor_channel_ids"]) == 5
     assert set(bundle.details["sensor_channel_ids"]) == {"A-1", "A-2"}
+
+
+def test_telemanom_dirichlet_partition_is_complete_and_alpha_sensitive(tmp_path):
+    base = tmp_path / "telemanom"
+    (base / "train").mkdir(parents=True)
+    (base / "test").mkdir()
+    rows = ["chan_id,spacecraft,anomaly_sequences,class,num_values"]
+    for entity_index in range(6):
+        channel_id = f"A-{entity_index + 1}"
+        rows.append(f"{channel_id},SMAP,[],[point],120")
+        train = np.full((120, 25), entity_index, dtype=np.float32)
+        test = np.full((10, 25), entity_index, dtype=np.float32)
+        np.save(base / "train" / f"{channel_id}.npy", train)
+        np.save(base / "test" / f"{channel_id}.npy", test)
+    (base / "labeled_anomalies.csv").write_text(
+        "\n".join(rows) + "\n", encoding="utf-8"
+    )
+
+    strong = load_real_benchmark(
+        "SMAP", tmp_path, 20, seed=42, dirichlet_alpha=0.1
+    )
+    near_iid = load_real_benchmark(
+        "SMAP", tmp_path, 20, seed=42, dirichlet_alpha=1.0e4
+    )
+
+    for bundle in (strong, near_iid):
+        assert len(bundle.sensor_train) == 20
+        assert all(len(samples) > 0 for samples in bundle.sensor_train.values())
+        assert sum(map(len, bundle.sensor_train.values())) == 648
+        assert bundle.details["partition_scheme"] == "source-entity-dirichlet"
+    assert strong.partition_alpha == 0.1
+    assert near_iid.partition_alpha == 1.0e4
+    assert (
+        strong.details["mean_normalised_client_entropy"]
+        < near_iid.details["mean_normalised_client_entropy"]
+    )
 
 
 def test_hfl_smoke_run():

@@ -31,11 +31,13 @@ N = 100 stationary sensors
 M = 10 mobile fog/AUV aggregators
 T = 30 federated rounds
 seeds = 42, 43, 44
+Dirichlet alpha = 0.1 and 10^4
 ```
 
-Training sequence của các source channel được chia thành đúng 100 đoạn liên
-tục, không chồng lặp và không nhân bản sample. Mỗi sensor chỉ chứa shard của một
-source channel. SMAP và MSL được train/evaluate độc lập vì khác input dimension.
+Normal-training rows được phân phối cho đúng 100 sensor theo source-channel
+Dirichlet: `α=0.1` là strongly non-IID, `α=10^4` là near-IID. Không sample nào
+bị lặp hoặc bỏ; validation/test giữ nguyên. SMAP và MSL được train/evaluate độc
+lập vì khác input dimension.
 
 Mỗi dataset chạy tuần tự đúng thứ tự:
 
@@ -46,19 +48,19 @@ Mỗi dataset chạy tuần tự đúng thứ tự:
 5. HFL-Selective
 6. HFL-Nearest
 
-Full matrix gồm `2 datasets × 6 methods × 3 seeds = 36 runs`.
+Full matrix gồm `2 datasets × 2 α × 6 methods × 3 seeds = 72 runs`.
 
 ## Chạy trên Ubuntu server
 
 Một lệnh sẽ tạo virtual environment, cài PyTorch CPU và dependency, tải/kiểm
-tra SMAP/MSL, chạy đủ 36 run, vẽ Fig. 8 và sinh Table IV:
+tra SMAP/MSL, chạy đủ 72 run, vẽ Fig. 8 và sinh Table IV:
 
 ```bash
 bash run_ubuntu.sh all
 ```
 
-Nên chạy smoke test trước. Quick mode vẫn kiểm tra đủ hai dataset và sáu
-baseline, nhưng chỉ dùng seed 42 và hai round:
+Nên chạy smoke test trước. Quick mode vẫn kiểm tra đủ hai dataset, hai giá trị
+α và sáu baseline, nhưng chỉ dùng seed 42 và hai round (`24 runs`):
 
 ```bash
 QUICK=1 WORKERS=4 bash run_ubuntu.sh run
@@ -101,7 +103,7 @@ results/runner_logs/
 Mỗi dataset/baseline/seed lưu riêng:
 
 ```text
-results/real/<dataset>/N_100_M_10/<baseline>/rho_0.05_alpha_na/seed_<seed>/
+results/real/<dataset>/N_100_M_10/<baseline>/rho_0.05_alpha_<alpha>/seed_<seed>/
 ├── training.log
 ├── rounds.csv
 ├── metrics.json

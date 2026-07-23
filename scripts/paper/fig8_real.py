@@ -23,26 +23,36 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("results/paper"))
     args = parser.parse_args()
     runs, _ = load_runs(args.results, "real")
-    datasets = ("SMAP", "MSL")
+    regimes = (
+        ("SMAP", 0.1, "SMAP\nα=0.1"),
+        ("SMAP", 1.0e4, "SMAP\nα≈10⁴"),
+        ("MSL", 0.1, "MSL\nα=0.1"),
+        ("MSL", 1.0e4, "MSL\nα≈10⁴"),
+    )
     methods = ordered_methods(runs)
-    x = np.arange(len(datasets))
+    x = np.arange(len(regimes))
     width = 0.82 / max(1, len(methods))
     fig, axes = plt.subplots(1, 2, figsize=(11.2, 4.0))
     for method_index, method in enumerate(methods):
         rows = runs[runs["method"] == method]
         offset = (method_index - (len(methods) - 1) / 2) * width
         for axis, metric in zip(axes, ("pa_f1", "energy_j")):
-            stats = (
-                rows.groupby("dataset")[metric]
-                .agg(["mean", "std"])
-                .reindex(datasets)
-                .fillna(0.0)
-            )
+            means = []
+            deviations = []
+            for dataset, alpha, _ in regimes:
+                group = rows[
+                    (rows["dataset"] == dataset)
+                    & np.isclose(rows["alpha"].astype(float), alpha)
+                ][metric]
+                means.append(float(group.mean()) if len(group) else 0.0)
+                deviations.append(
+                    float(group.std(ddof=0)) if len(group) else 0.0
+                )
             axis.bar(
                 x + offset,
-                stats["mean"],
+                means,
                 width,
-                yerr=stats["std"],
+                yerr=deviations,
                 capsize=2,
                 color=METHOD_COLORS[method],
                 label=METHOD_LABELS[method],
@@ -54,7 +64,7 @@ def main() -> None:
         yscale="log",
     )
     for axis in axes:
-        axis.set_xticks(x, datasets)
+        axis.set_xticks(x, [label for _, _, label in regimes])
         axis.grid(axis="y", alpha=0.25)
     axes[0].legend(fontsize=7, ncol=2)
     save_figure(fig, args.output, "fig8_real_benchmarks")

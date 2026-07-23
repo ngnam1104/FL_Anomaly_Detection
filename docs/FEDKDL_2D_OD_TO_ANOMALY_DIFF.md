@@ -144,13 +144,14 @@ object detection.
   `N=100` được dùng thêm ở các figure/table scalability và ablation.
 - Cross-dataset benchmark dùng SMAP (`D=25`) và MSL (`D=55`) độc lập.
 - Mỗi dataset dùng cùng topology `N=100, M=10`.
-- 55 SMAP source channels và 27 MSL source channels được chia thành đúng 100
-  contiguous, non-overlapping normal-training shards. Không lặp sample; mỗi
-  sensor shard chỉ thuộc một source channel.
+- 55 SMAP source channels và 27 MSL source channels là các domain/category để
+  Dirichlet phân phối normal-training rows cho đúng 100 sensor, không lặp mẫu.
+- Chạy cả `α=0.1` (strongly non-IID) và `α=10^4` (near-IID).
 - Real-data experiments dùng 30 round.
 
 `run_experiments.py` mã hóa các suite `scalability`, `compression`, `noniid` và
-`real`. Ubuntu runner chỉ gọi suite `real` cho SMAP/MSL và chạy theo thứ tự
+`real`. Ubuntu runner chỉ gọi suite `real` cho SMAP/MSL, cho cả hai giá trị α,
+và chạy theo thứ tự
 Centralised, FedAvg, FedProx, HFL-NoCoop, HFL-Selective, HFL-Nearest.
 `scripts/paper/` sinh Figure 4–8 và Table II–IV. `run_ubuntu.sh` cài môi trường,
 chuẩn bị benchmark, chạy tuần tự baseline/seed và lưu raw log, round CSV,

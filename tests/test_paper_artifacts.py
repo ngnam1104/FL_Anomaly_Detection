@@ -129,17 +129,18 @@ def _write_fixture(root: Path) -> None:
                     alpha=alpha,
                 )
     for dataset in ("SMAP", "MSL"):
-        for method in ALL_METHODS:
-            for seed in (42, 43):
-                _write_run(
-                    root,
-                    scenario="real",
-                    dataset=dataset,
-                    method=method,
-                    sensors=100,
-                    seed=seed,
-                    alpha=None,
-                )
+        for alpha in (0.1, 1.0e4):
+            for method in ALL_METHODS:
+                for seed in (42, 43):
+                    _write_run(
+                        root,
+                        scenario="real",
+                        dataset=dataset,
+                        method=method,
+                        sensors=100,
+                        seed=seed,
+                        alpha=alpha,
+                    )
 
 
 def _invoke(monkeypatch, entrypoint, results: Path, output: Path) -> None:

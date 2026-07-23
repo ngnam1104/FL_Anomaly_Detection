@@ -124,7 +124,17 @@ def run_experiment(args: argparse.Namespace) -> Path:
             seed=args.seed,
         )
     else:
-        data = load_real_benchmark(args.dataset, args.data_root, sensors, seed=args.seed)
+        data = load_real_benchmark(
+            args.dataset,
+            args.data_root,
+            sensors,
+            seed=args.seed,
+            dirichlet_alpha=(
+                args.dirichlet_alpha
+                if args.dataset in {"SMAP", "MSL"}
+                else None
+            ),
+        )
 
     run_dir = (
         args.output_root

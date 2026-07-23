@@ -36,14 +36,18 @@ M = 10 mobile fog/AUV aggregators
 
 For each source channel, the first 90% of its normal training sequence is used
 for local training and the remaining 10% for normal-only threshold validation.
-The local-training sequences are split into 100 contiguous, non-overlapping
-sensor shards, allocated approximately in proportion to sequence length.
+Source-channel identity is then used as the domain/category for a Dirichlet
+partition across 100 sensors:
 
-This mapping does not duplicate samples and does not mix samples from different
-source channels inside one sensor. Test sequences and inclusive anomaly ranges
-remain unchanged and are only used for evaluation.
+- `alpha=0.1`: strongly non-IID; clients are dominated by fewer channels.
+- `alpha=10^4`: near-IID; channel mixtures approach a uniform allocation.
+
+Every local-training row is assigned exactly once. Strongly non-IID draws that
+leave a sensor empty are repaired by moving one row from the largest client,
+without duplication. Test sequences and inclusive anomaly ranges remain
+unchanged and are only used for evaluation.
 
 SMAP and MSL are trained and evaluated independently because their input
 dimensions differ. “Cross-dataset” here means applying the same topology,
-baselines and hyperparameters to both benchmarks, not training on SMAP and
-directly testing the same autoencoder on MSL.
+Dirichlet regimes, baselines and hyperparameters to both benchmarks, not
+training on SMAP and directly testing the same autoencoder on MSL.

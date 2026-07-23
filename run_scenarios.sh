@@ -23,6 +23,7 @@ if [[ -z "${WORKERS}" ]]; then
     WORKERS="${CPU_COUNT}"
   fi
 fi
+CENTRALIZED_TORCH_THREADS="${CENTRALIZED_TORCH_THREADS:-${WORKERS}}"
 
 RUN_START_EPOCH="$(date +%s)"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -75,7 +76,7 @@ PY
 echo "datasets=SMAP,MSL sensors=100 fogs=10"
 echo "dirichlet_alpha=0.1,10000 seeds=42,43,44"
 echo "baselines=centralized,fedavg,fedprox,hfl-nocoop,hfl-selective,hfl-nearest"
-echo "workers=${WORKERS} torch_threads_per_worker=${TORCH_THREADS} backend=process quick=${QUICK}"
+echo "workers=${WORKERS} torch_threads_per_worker=${TORCH_THREADS} centralized_torch_threads=${CENTRALIZED_TORCH_THREADS} backend=process quick=${QUICK}"
 echo "raw_log=${MASTER_LOG}"
 
 export PYTHONUNBUFFERED=1
@@ -92,6 +93,7 @@ ARGUMENTS=(
   --output-root "${OUTPUT_ROOT}"
   --workers "${WORKERS}"
   --torch-threads "${TORCH_THREADS}"
+  --centralized-torch-threads "${CENTRALIZED_TORCH_THREADS}"
   --parallel-backend process
 )
 if [[ "${QUICK}" == "1" ]]; then

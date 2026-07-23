@@ -31,6 +31,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--torch-threads", type=int, default=1)
     parser.add_argument(
+        "--centralized-torch-threads",
+        type=int,
+        default=None,
+        help="PyTorch CPU threads for centralized training only.",
+    )
+    parser.add_argument(
         "--parallel-backend", choices=("auto", "process", "thread"), default="auto"
     )
     parser.add_argument(
@@ -146,6 +152,9 @@ def run_real(cli: argparse.Namespace) -> None:
                     args.sensors = 100
                     args.fogs = 10
                     args.baseline = method
+                    centralized_threads = getattr(cli, "centralized_torch_threads", None)
+                    if method == "centralized" and centralized_threads:
+                        args.torch_threads = centralized_threads
                     args.seed = seed
                     args.dirichlet_alpha = alpha
                     args.rounds = 2 if cli.quick else 30

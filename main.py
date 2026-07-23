@@ -154,7 +154,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
     logger = _configure_logger(run_dir / "training.log", args.verbose)
     logger.info(
-        "start dataset=%s baseline=%s rounds=%d sensors=%d fogs=%d workers=%d backend=%s",
+        "start dataset=%s baseline=%s rounds=%d sensors=%d fogs=%d workers=%d backend=%s torch_threads=%d",
         data.name,
         args.baseline,
         rounds,
@@ -162,6 +162,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
         fogs,
         args.workers,
         args.parallel_backend,
+        args.torch_threads,
     )
     simulator = AnomalyFLSimulator(
         data,

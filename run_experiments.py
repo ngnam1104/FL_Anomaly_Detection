@@ -28,6 +28,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workers", type=int, default=max(1, min(8, os.cpu_count() or 1))
     )
+    parser.add_argument("--torch-threads", type=int, default=1)
+    parser.add_argument(
+        "--parallel-backend", choices=("auto", "process", "thread"), default="auto"
+    )
     parser.add_argument(
         "--quick", action="store_true", help="One seed, two rounds and small data"
     )
@@ -39,6 +43,8 @@ def _base_args(cli: argparse.Namespace, scenario: str):
     args.data_root = type(args.data_root)(cli.data_root)
     args.output_root = type(args.output_root)(cli.output_root)
     args.workers = cli.workers
+    args.torch_threads = getattr(cli, "torch_threads", 1)
+    args.parallel_backend = getattr(cli, "parallel_backend", "auto")
     args.verbose = False
     args.scenario = scenario
     if cli.quick:

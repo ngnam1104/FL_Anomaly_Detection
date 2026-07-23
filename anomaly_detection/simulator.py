@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import copy
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing as mp
+import os
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from typing import Dict
 
@@ -50,6 +52,77 @@ BASELINES = (
 )
 
 
+def _configure_local_worker(torch_threads: int) -> None:
+    """Limit each worker to one BLAS/PyTorch thread to avoid oversubscription."""
+
+    torch.set_num_threads(max(1, int(torch_threads)))
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        # It is already configured in a persistent worker.
+        pass
+
+
+def _train_sensor_worker(task: dict) -> dict:
+    """Pickle-safe, CPU-only local training executed by a pool worker.
+
+    Compression is deliberately left in the parent process because Top-K error
+    feedback has mutable residual state for every sensor.
+    """
+
+    sensor_id = task["sensor_id"]
+    global_state = task["global_state"]
+    samples = task["samples"]
+    model = Autoencoder(task["input_dim"], task["hidden_dims"])
+    model.load_state_dict(global_state)
+    model.train()
+    optimizer = torch.optim.SGD(model.parameters(), lr=task["local_lr"])
+    generator = torch.Generator().manual_seed(task["train_seed"])
+    loader = DataLoader(
+        TensorDataset(samples),
+        batch_size=task["batch_size"],
+        shuffle=True,
+        generator=generator,
+        num_workers=0,
+    )
+    global_parameters = {
+        name: value.detach().clone() for name, value in global_state.items()
+    }
+    total_loss = 0.0
+    batches = 0
+    for _ in range(task["local_epochs"]):
+        for (batch,) in loader:
+            optimizer.zero_grad(set_to_none=True)
+            loss = torch.mean(torch.sum((model(batch) - batch) ** 2, dim=1))
+            if task["use_prox"]:
+                proximal = sum(
+                    torch.sum((parameter - global_parameters[name]) ** 2)
+                    for name, parameter in model.named_parameters()
+                )
+                loss = loss + 0.5 * task["fedprox_mu"] * proximal
+            loss.backward()
+            optimizer.step()
+            total_loss += float(loss.detach())
+            batches += 1
+    local_state = model.state_dict()
+    delta_state = {
+        name: local_state[name].detach().cpu() - global_state[name].detach().cpu()
+        for name in global_state
+    }
+    layer_ops = sum(
+        module.in_features * module.out_features
+        for module in model.modules()
+        if isinstance(module, nn.Linear)
+    )
+    return {
+        "sensor_id": sensor_id,
+        "delta_state": delta_state,
+        "samples": len(samples),
+        "loss": total_loss / max(1, batches),
+        "flops": len(samples) * task["local_epochs"] * layer_ops * 3.0,
+    }
+
+
 class AnomalyFLSimulator:
     def __init__(
         self,
@@ -62,6 +135,8 @@ class AnomalyFLSimulator:
         baseline: str,
         seed: int = 42,
         workers: int = 4,
+        parallel_backend: str = "auto",
+        torch_threads: int = 1,
         logger: logging.Logger | None = None,
     ):
         if baseline not in BASELINES:
@@ -74,6 +149,16 @@ class AnomalyFLSimulator:
         self.baseline = baseline
         self.seed = int(seed)
         self.workers = max(1, int(workers))
+        if parallel_backend not in {"auto", "process", "thread"}:
+            raise ValueError("parallel_backend must be auto, process, or thread")
+        self.parallel_backend = (
+            "process"
+            if parallel_backend == "auto" and os.name != "nt"
+            else "thread"
+            if parallel_backend == "auto"
+            else parallel_backend
+        )
+        self.torch_threads = max(1, int(torch_threads))
         self.log = logger or logging.getLogger(__name__)
         self.net.N_SENSORS = len(data.sensor_train)
         self.learning.FEATURE_DIM = data.input_dim
@@ -106,46 +191,31 @@ class AnomalyFLSimulator:
         *,
         compress_update: bool = True,
     ) -> dict:
-        samples = self.data.sensor_train[sensor_id]
-        model = Autoencoder(self.data.input_dim, self.learning.HIDDEN_DIMS)
-        model.load_state_dict(global_state)
-        model.train()
-        optimizer = torch.optim.SGD(model.parameters(), lr=self.learning.LOCAL_LR)
-        generator = torch.Generator().manual_seed(
-            self.seed * 1_000_003 + round_index * 10_007 + sensor_id
+        raw_result = _train_sensor_worker(
+            self._training_task(sensor_id, global_state, round_index)
         )
-        loader = DataLoader(
-            TensorDataset(samples),
-            batch_size=self.learning.LOCAL_BATCH_SIZE,
-            shuffle=True,
-            generator=generator,
-            num_workers=0,
-        )
-        global_parameters = {
-            name: value.detach().clone() for name, value in global_state.items()
+        return self._finalise_local_update(raw_result, compress_update)
+
+    def _training_task(
+        self, sensor_id: int, global_state: Dict[str, torch.Tensor], round_index: int
+    ) -> dict:
+        return {
+            "sensor_id": sensor_id,
+            "global_state": global_state,
+            "samples": self.data.sensor_train[sensor_id],
+            "input_dim": self.data.input_dim,
+            "hidden_dims": self.learning.HIDDEN_DIMS,
+            "local_lr": self.learning.LOCAL_LR,
+            "local_epochs": self.learning.LOCAL_EPOCHS,
+            "batch_size": self.learning.LOCAL_BATCH_SIZE,
+            "fedprox_mu": self.learning.FEDPROX_MU,
+            "use_prox": self.baseline == "fedprox",
+            "train_seed": self.seed * 1_000_003 + round_index * 10_007 + sensor_id,
         }
-        total_loss = 0.0
-        batches = 0
-        use_prox = self.baseline == "fedprox"
-        for _ in range(self.learning.LOCAL_EPOCHS):
-            for (batch,) in loader:
-                optimizer.zero_grad(set_to_none=True)
-                loss = torch.mean(torch.sum((model(batch) - batch) ** 2, dim=1))
-                if use_prox:
-                    proximal = sum(
-                        torch.sum((parameter - global_parameters[name]) ** 2)
-                        for name, parameter in model.named_parameters()
-                    )
-                    loss = loss + 0.5 * self.learning.FEDPROX_MU * proximal
-                loss.backward()
-                optimizer.step()
-                total_loss += float(loss.detach())
-                batches += 1
-        local_state = model.state_dict()
-        delta_state = {
-            name: local_state[name].detach().cpu() - global_state[name].detach().cpu()
-            for name in global_state
-        }
+
+    def _finalise_local_update(self, raw_result: dict, compress_update: bool) -> dict:
+        sensor_id = raw_result["sensor_id"]
+        delta_state = raw_result["delta_state"]
         delta_vector, _ = flatten_state(delta_state)
         if compress_update and self.learning.RHO_S < 1.0:
             payload = self.compressors[sensor_id].compress(delta_vector)
@@ -158,53 +228,57 @@ class AnomalyFLSimulator:
         else:
             reconstructed_delta = delta_state
             payload_bits = 0
-        layer_ops = sum(
-            module.in_features * module.out_features
-            for module in model.modules()
-            if isinstance(module, nn.Linear)
-        )
-        total_flops = (
-            len(samples)
-            * self.learning.LOCAL_EPOCHS
-            * layer_ops
-            * 3.0
-        )
         return {
             "sensor_id": sensor_id,
             "delta": reconstructed_delta,
-            "samples": len(samples),
-            "loss": total_loss / max(1, batches),
+            "samples": raw_result["samples"],
+            "loss": raw_result["loss"],
             "payload_bits": payload_bits,
-            "flops": total_flops,
+            "flops": raw_result["flops"],
         }
 
+    def _local_training_pool(self):
+        max_workers = self.workers
+        if self.parallel_backend == "process":
+            # Linux fork avoids re-importing the simulator for every worker and
+            # keeps the CPU-only tensors independent from the parent process.
+            kwargs = {"max_workers": max_workers, "initializer": _configure_local_worker,
+                      "initargs": (self.torch_threads,)}
+            if os.name != "nt":
+                kwargs["mp_context"] = mp.get_context("fork")
+            pool = ProcessPoolExecutor(**kwargs)
+        else:
+            pool = ThreadPoolExecutor(
+                max_workers=max_workers, thread_name_prefix="sensor-train"
+            )
+        return pool
+
     def _parallel_local_training(
-        self, participants: list[int], round_index: int
+        self, participants: list[int], round_index: int, pool
     ) -> list[dict]:
         global_state = {
             name: value.detach().cpu().clone()
             for name, value in self.global_model.state_dict().items()
         }
         results = []
-        with ThreadPoolExecutor(
-            max_workers=min(self.workers, max(1, len(participants))),
-            thread_name_prefix="sensor-train",
-        ) as pool:
-            futures = {
-                pool.submit(self._train_sensor, sensor_id, global_state, round_index): sensor_id
-                for sensor_id in participants
-            }
-            for future in as_completed(futures):
-                result = future.result()
-                results.append(result)
-                self.log.debug(
-                    "round=%d sensor=%d samples=%d loss=%.6f payload_bits=%d",
-                    round_index,
-                    result["sensor_id"],
-                    result["samples"],
-                    result["loss"],
-                    result["payload_bits"],
-                )
+        futures = {
+            pool.submit(
+                _train_sensor_worker,
+                self._training_task(sensor_id, global_state, round_index),
+            ): sensor_id
+            for sensor_id in participants
+        }
+        for future in as_completed(futures):
+            result = self._finalise_local_update(future.result(), compress_update=True)
+            results.append(result)
+            self.log.debug(
+                "round=%d sensor=%d samples=%d loss=%.6f payload_bits=%d",
+                round_index,
+                result["sensor_id"],
+                result["samples"],
+                result["loss"],
+                result["payload_bits"],
+            )
         return sorted(results, key=lambda item: item["sensor_id"])
 
     def _evaluate(self) -> dict:
@@ -235,6 +309,16 @@ class AnomalyFLSimulator:
     def run(self, rounds: int) -> list[dict]:
         if self.baseline == "centralized":
             return self._run_centralized(rounds)
+        return self._run_federated(rounds)
+
+    def _run_federated(self, rounds: int) -> list[dict]:
+        pool = self._local_training_pool()
+        try:
+            return self._run_federated_with_pool(rounds, pool)
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+
+    def _run_federated_with_pool(self, rounds: int, pool) -> list[dict]:
         cumulative_comm_energy = 0.0
         cumulative_total_energy = 0.0
         cumulative_latency = 0.0
@@ -271,7 +355,7 @@ class AnomalyFLSimulator:
                 clusters,
                 mobility,
             )
-            local_results = self._parallel_local_training(participants, round_index)
+            local_results = self._parallel_local_training(participants, round_index, pool)
             by_sensor = {item["sensor_id"]: item for item in local_results}
             global_before = {
                 name: value.detach().cpu().clone()
@@ -594,6 +678,8 @@ class AnomalyFLSimulator:
             "baseline": self.baseline,
             "seed": self.seed,
             "workers": self.workers,
+            "parallel_backend": self.parallel_backend,
+            "torch_threads_per_worker": self.torch_threads,
             "input_dim": self.data.input_dim,
             "model_parameters": self.model_parameters,
             "partition_alpha": self.data.partition_alpha,

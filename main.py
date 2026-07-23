@@ -41,6 +41,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--workers", type=int, default=max(1, min(8, os.cpu_count() or 1)))
     parser.add_argument("--torch-threads", type=int, default=1)
+    parser.add_argument(
+        "--parallel-backend",
+        choices=("auto", "process", "thread"),
+        default="auto",
+        help="Local FL training backend; auto uses processes on Linux.",
+    )
     parser.add_argument("--samples-per-sensor", type=int, default=128)
     parser.add_argument("--heterogeneity", type=float, default=0.35)
     parser.add_argument("--dirichlet-alpha", type=float, default=1.0)
@@ -148,13 +154,14 @@ def run_experiment(args: argparse.Namespace) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
     logger = _configure_logger(run_dir / "training.log", args.verbose)
     logger.info(
-        "start dataset=%s baseline=%s rounds=%d sensors=%d fogs=%d workers=%d",
+        "start dataset=%s baseline=%s rounds=%d sensors=%d fogs=%d workers=%d backend=%s",
         data.name,
         args.baseline,
         rounds,
         sensors,
         fogs,
         args.workers,
+        args.parallel_backend,
     )
     simulator = AnomalyFLSimulator(
         data,
@@ -165,6 +172,8 @@ def run_experiment(args: argparse.Namespace) -> Path:
         baseline=args.baseline,
         seed=args.seed,
         workers=args.workers,
+        parallel_backend=args.parallel_backend,
+        torch_threads=args.torch_threads,
         logger=logger,
     )
     history = simulator.run(rounds)

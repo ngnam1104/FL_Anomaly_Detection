@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from pathlib import Path
 
 import run_experiments
 
@@ -36,3 +37,21 @@ def test_real_matrix_uses_two_datasets_six_methods_and_fixed_topology(
     assert all(args.fogs == 10 for args in captured)
     assert all(args.rounds == 2 for args in captured)
     assert all(args.seed == 42 for args in captured)
+
+
+def test_ubuntu_setup_and_runner_have_separate_responsibilities():
+    root = Path(__file__).resolve().parents[1]
+    setup = (root / "setup_ubuntu.sh").read_text(encoding="utf-8")
+    runner = (root / "run_scenarios.sh").read_text(encoding="utf-8")
+
+    assert "pip install" in setup
+    assert "scripts.prepare_benchmarks" in setup
+    assert "partition_manifest.json" in setup
+    assert "run_experiments.py" not in setup
+
+    assert "run_experiments.py" in runner
+    assert "--suite real" in runner
+    assert "partition_manifest.json" in runner
+    assert "pip install" not in runner
+    assert "scripts.prepare_benchmarks" not in runner
+    assert not (root / "run_ubuntu.sh").exists()

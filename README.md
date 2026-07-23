@@ -52,52 +52,63 @@ Full matrix gồm `2 datasets × 2 α × 6 methods × 3 seeds = 72 runs`.
 
 ## Chạy trên Ubuntu server
 
-Một lệnh sẽ tạo virtual environment, cài PyTorch CPU và dependency, tải/kiểm
-tra SMAP/MSL, chạy đủ 72 run, vẽ Fig. 8 và sinh Table IV:
+### 1. Setup một lần
 
 ```bash
-bash run_ubuntu.sh all
+bash setup_ubuntu.sh
 ```
+
+`setup_ubuntu.sh` chỉ làm phần chuẩn bị:
+
+- Tạo `.venv`.
+- Cài PyTorch CPU và toàn bộ `requirements.txt`.
+- Tải và giải nén SMAP/MSL.
+- Sinh và kiểm tra partition cho 2 dataset × 2 α × 3 seed.
+- Ghi `datasets/partition_manifest.json` và setup log.
+
+### 2. Chạy các kịch bản
 
 Nên chạy smoke test trước. Quick mode vẫn kiểm tra đủ hai dataset, hai giá trị
 α và sáu baseline, nhưng chỉ dùng seed 42 và hai round (`24 runs`):
 
 ```bash
-QUICK=1 WORKERS=4 bash run_ubuntu.sh run
+QUICK=1 WORKERS=4 bash run_scenarios.sh
+```
+
+Chạy đủ 72 run, sau đó sinh Fig. 8 và Table IV:
+
+```bash
+WORKERS=8 bash run_scenarios.sh
 ```
 
 Chạy lâu sau khi đóng SSH:
 
 ```bash
-nohup env WORKERS=8 bash run_ubuntu.sh all > launcher.log 2>&1 &
+nohup env WORKERS=8 bash run_scenarios.sh > launcher.log 2>&1 &
 ```
 
-Các action:
+`run_scenarios.sh` không cài package và không tải dataset. Nếu `.venv` hoặc
+partition manifest chưa tồn tại, script dừng và yêu cầu chạy setup trước.
 
-```bash
-bash run_ubuntu.sh install
-bash run_ubuntu.sh prepare-data
-bash run_ubuntu.sh run
-PREPARE_DATA=0 WORKERS=8 bash run_ubuntu.sh run
-```
+Các biến cấu hình:
 
-Các biến cấu hình runner:
-
-- `WORKERS`: số sensor được local-train đồng thời, mặc định tối đa 8.
-- `QUICK=1`: một seed, hai round, nhưng vẫn chạy đủ sáu baseline.
-- `PREPARE_DATA=0`: bỏ qua download/extract khi data đã sẵn sàng.
-- `DATA_ROOT`, `OUTPUT_ROOT`, `VENV_DIR`, `PYTHON_BIN`: ghi đè đường dẫn/runtime.
+- Cả hai file: `DATA_ROOT`, `OUTPUT_ROOT`, `VENV_DIR`.
+- Setup: `PYTHON_BIN`, `TORCH_INDEX_URL`.
+- Runner: `WORKERS` và `QUICK=1`.
 
 ## Log và kết quả
 
 Raw log toàn phiên và result index có timestamp:
 
 ```text
-results/runner_logs/
-├── <action>_smap_msl_<timestamp>.log
-├── <action>_smap_msl_<timestamp>_results.csv
-├── <action>_smap_msl_<timestamp>_results.json
+results/setup_logs/
+├── setup_<timestamp>.log
 └── pip_freeze_<timestamp>.txt
+
+results/runner_logs/
+├── smap_msl_<timestamp>.log
+├── smap_msl_<timestamp>_results.csv
+└── smap_msl_<timestamp>_results.json
 ```
 
 Mỗi dataset/baseline/seed lưu riêng:

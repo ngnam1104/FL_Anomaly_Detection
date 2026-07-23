@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# One-time Ubuntu setup: Python environment, dependencies, SMAP/MSL data, and
+# deterministic partition validation for every paper seed and Dirichlet mode.
+
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+VENV_DIR="${VENV_DIR:-.venv}"
+DATA_ROOT="${DATA_ROOT:-datasets}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-results}"
+TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
+
+if (( $# != 0 )); then
+  echo "Usage: bash setup_ubuntu.sh" >&2
+  exit 2
+fi
+
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+LOG_ROOT="${OUTPUT_ROOT}/setup_logs"
+mkdir -p "${LOG_ROOT}"
+SETUP_LOG="${LOG_ROOT}/setup_${RUN_ID}.log"
+exec > >(tee -a "${SETUP_LOG}") 2>&1
+
+on_error() {
+  local exit_code=$?
+  echo "SETUP FAILED exit_code=${exit_code} line=${BASH_LINENO[0]}"
+  echo "Raw log: ${SETUP_LOG}"
+  exit "${exit_code}"
+}
+trap on_error ERR
+
+echo "setup datasets=SMAP,MSL sensors=100 fogs=10"
+echo "dirichlet_alpha=0.1,10000 seeds=42,43,44"
+echo "venv=${VENV_DIR} data_root=${DATA_ROOT}"
+echo "raw_log=${SETUP_LOG}"
+
+if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+  echo "Missing ${PYTHON_BIN}. Install Python 3.10+ first." >&2
+  exit 3
+fi
+
+if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
+  echo "Creating virtual environment: ${VENV_DIR}"
+  if ! "${PYTHON_BIN}" -m venv "${VENV_DIR}"; then
+    echo "venv creation failed. On Ubuntu run:" >&2
+    echo "  sudo apt-get update && sudo apt-get install -y python3-venv" >&2
+    exit 4
+  fi
+fi
+
+PYTHON="${VENV_DIR}/bin/python"
+"${PYTHON}" -m pip install --upgrade pip setuptools wheel
+"${PYTHON}" -m pip install --index-url "${TORCH_INDEX_URL}" "torch>=2.0"
+"${PYTHON}" -m pip install -r requirements.txt
+"${PYTHON}" -m pip check
+"${PYTHON}" -m pip freeze > "${LOG_ROOT}/pip_freeze_${RUN_ID}.txt"
+echo "Environment ready: $("${PYTHON}" --version)"
+
+"${PYTHON}" -u -m scripts.prepare_benchmarks \
+  --datasets-root "${DATA_ROOT}" \
+  --dataset nasa
+
+DATA_ROOT="${DATA_ROOT}" "${PYTHON}" - <<'PY'
+import json
+import os
+from itertools import product
+from pathlib import Path
+
+from anomaly_detection.data import load_real_benchmark
+
+root = Path(os.environ["DATA_ROOT"])
+datasets = (("SMAP", 25, 55), ("MSL", 55, 27))
+alphas = (0.1, 1.0e4)
+seeds = (42, 43, 44)
+partitions = []
+
+for (name, expected_dim, expected_sources), alpha, seed in product(
+    datasets, alphas, seeds
+):
+    bundle = load_real_benchmark(
+        name,
+        root,
+        100,
+        seed=seed,
+        dirichlet_alpha=alpha,
+    )
+    sizes = [len(samples) for samples in bundle.sensor_train.values()]
+    entropy = bundle.details["mean_normalised_client_entropy"]
+    assert len(sizes) == 100
+    assert min(sizes) > 0
+    assert bundle.input_dim == expected_dim
+    assert bundle.details["source_entities"] == expected_sources
+    partitions.append(
+        {
+            "dataset": name,
+            "alpha": alpha,
+            "seed": seed,
+            "sensors": 100,
+            "fogs": 10,
+            "input_dim": bundle.input_dim,
+            "source_entities": bundle.details["source_entities"],
+            "train_rows": sum(sizes),
+            "min_sensor_rows": min(sizes),
+            "max_sensor_rows": max(sizes),
+            "mean_normalised_client_entropy": entropy,
+        }
+    )
+    print(
+        f"validated {name}: alpha={alpha:g} seed={seed} N=100 M=10 "
+        f"D={bundle.input_dim} rows={sum(sizes)} "
+        f"min/max={min(sizes)}/{max(sizes)} entropy={entropy:.4f}"
+    )
+
+for name, _, _ in datasets:
+    for seed in seeds:
+        by_alpha = {
+            row["alpha"]: row["mean_normalised_client_entropy"]
+            for row in partitions
+            if row["dataset"] == name and row["seed"] == seed
+        }
+        assert by_alpha[0.1] < by_alpha[1.0e4], (
+            f"{name} seed={seed}: alpha=0.1 must be more non-IID than alpha=1e4"
+        )
+
+manifest = {
+    "schema_version": 1,
+    "datasets": ["SMAP", "MSL"],
+    "sensors": 100,
+    "fogs": 10,
+    "alphas": list(alphas),
+    "seeds": list(seeds),
+    "partition_scheme": "source-entity-dirichlet",
+    "partitions": partitions,
+}
+manifest_path = root / "partition_manifest.json"
+manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+print(f"Partition manifest: {manifest_path.resolve()}")
+PY
+
+echo "SETUP COMPLETE"
+echo "Raw setup log: ${SETUP_LOG}"
+echo "Partition manifest: ${DATA_ROOT}/partition_manifest.json"
+echo "Next: bash run_scenarios.sh"

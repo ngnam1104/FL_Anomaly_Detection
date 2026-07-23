@@ -153,8 +153,9 @@ object detection.
 `real`. Ubuntu runner chỉ gọi suite `real` cho SMAP/MSL, cho cả hai giá trị α,
 và chạy theo thứ tự
 Centralised, FedAvg, FedProx, HFL-NoCoop, HFL-Selective, HFL-Nearest.
-`scripts/paper/` sinh Figure 4–8 và Table II–IV. `run_ubuntu.sh` cài môi trường,
-chuẩn bị benchmark, chạy tuần tự baseline/seed và lưu raw log, round CSV,
+`scripts/paper/` sinh Figure 4–8 và Table II–IV. `setup_ubuntu.sh` cài môi
+trường, tải benchmark, kiểm tra và ghi partition manifest.
+`run_scenarios.sh` chỉ chạy tuần tự baseline/seed rồi lưu raw log, round CSV,
 metrics JSON, summary JSON cùng result index của phiên.
 
 ## 6. Code cũ đã loại bỏ

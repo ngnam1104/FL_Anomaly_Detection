@@ -9,6 +9,7 @@ __pycache__/
 datasets/**/*.npy
 datasets/**/*.txt
 datasets/**/*.csv
+datasets/partition_manifest.json
 datasets/_downloads/
 datasets/SMD/
 datasets/telemanom/

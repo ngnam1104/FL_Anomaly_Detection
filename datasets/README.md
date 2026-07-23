@@ -7,7 +7,9 @@ dataset version 1. Prepare it with:
 .venv/bin/python -m scripts.prepare_benchmarks --dataset nasa
 ```
 
-`run_ubuntu.sh` performs this step automatically. The extracted layout is:
+`setup_ubuntu.sh` performs this step automatically, validates all 12
+dataset/alpha/seed partitions and writes `datasets/partition_manifest.json`.
+The extracted layout is:
 
 ```text
 datasets/

@@ -58,6 +58,20 @@ Full matrix gồm `2 datasets × 2 α × 6 methods × 3 seeds = 72 runs`.
 bash setup_ubuntu.sh
 ```
 
+Nếu Ubuntu báo thiếu `ensurepip`, cài gói venv đúng phiên bản Python rồi chạy
+lại. Ví dụ log của Python 3.13 cần:
+
+```bash
+sudo apt-get update && sudo apt-get install -y python3.13-venv
+bash setup_ubuntu.sh
+```
+
+Hoặc để setup script tự gọi `sudo apt-get`:
+
+```bash
+INSTALL_SYSTEM_VENV=1 bash setup_ubuntu.sh
+```
+
 `setup_ubuntu.sh` chỉ làm phần chuẩn bị:
 
 - Tạo `.venv`.

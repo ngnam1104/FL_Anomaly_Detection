@@ -9,6 +9,7 @@ VENV_DIR="${VENV_DIR:-.venv}"
 DATA_ROOT="${DATA_ROOT:-datasets}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-results}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
+INSTALL_SYSTEM_VENV="${INSTALL_SYSTEM_VENV:-0}"
 
 if (( $# != 0 )); then
   echo "Usage: bash setup_ubuntu.sh" >&2
@@ -42,9 +43,20 @@ fi
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
   echo "Creating virtual environment: ${VENV_DIR}"
   if ! "${PYTHON_BIN}" -m venv "${VENV_DIR}"; then
-    echo "venv creation failed. On Ubuntu run:" >&2
-    echo "  sudo apt-get update && sudo apt-get install -y python3-venv" >&2
-    exit 4
+    PYTHON_VERSION="$("${PYTHON_BIN}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+    VENV_PACKAGE="python${PYTHON_VERSION}-venv"
+    if [[ "${INSTALL_SYSTEM_VENV}" == "1" ]] && command -v apt-get >/dev/null 2>&1; then
+      echo "Installing missing system package: ${VENV_PACKAGE}"
+      sudo apt-get update
+      sudo apt-get install -y "${VENV_PACKAGE}"
+      "${PYTHON_BIN}" -m venv "${VENV_DIR}"
+    else
+      echo "venv creation failed. On Debian/Ubuntu run:" >&2
+      echo "  sudo apt-get update && sudo apt-get install -y ${VENV_PACKAGE}" >&2
+      echo "Or let this script install it interactively:" >&2
+      echo "  INSTALL_SYSTEM_VENV=1 bash setup_ubuntu.sh" >&2
+      exit 4
+    fi
   fi
 fi
 

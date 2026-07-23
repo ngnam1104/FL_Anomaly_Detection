@@ -13,7 +13,8 @@ SEEDS = (42, 43, 44)
 HFL_METHODS = ("hfl-nocoop", "hfl-selective", "hfl-nearest")
 SCALABILITY_METHODS = ("fedprox",) + HFL_METHODS
 COMPRESSION_METHODS = ("fedavg", "fedprox", "hfl-nocoop", "hfl-nearest")
-REAL_METHODS = ("centralized", "fedavg", "fedprox") + HFL_METHODS
+# Run the federated methods first; the centralized oracle is intentionally last.
+REAL_METHODS = ("fedavg", "fedprox") + HFL_METHODS + ("centralized",)
 
 
 def parse_args() -> argparse.Namespace:

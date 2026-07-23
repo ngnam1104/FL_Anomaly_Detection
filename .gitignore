@@ -1,0 +1,27 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Local benchmark data and generated artifacts
+datasets/**/*.npy
+datasets/**/*.txt
+datasets/**/*.csv
+datasets/_downloads/
+datasets/SMD/
+datasets/telemanom/
+results/
+logs/
+checkpoints/
+*.pt
+*.pth
+
+# Temporary render and editor files
+tmp/
+.vscode/
+.idea/
+.DS_Store
+.papers/
+Thumbs.db

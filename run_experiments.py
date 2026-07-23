@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+from pathlib import Path
 
 from main import parse_args as parse_single_args
 from main import run_experiment
@@ -42,6 +44,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--quick", action="store_true", help="One seed, two rounds and small data"
     )
+    parser.add_argument(
+        "--no-resume",
+        dest="resume",
+        action="store_false",
+        help="Re-run even when a matching completed summary exists.",
+    )
+    parser.set_defaults(resume=True)
     return parser.parse_args()
 
 
@@ -58,6 +67,48 @@ def _base_args(cli: argparse.Namespace, scenario: str):
         args.local_epochs = 1
         args.batch_size = 256
     return args
+
+
+def _completed_run_path(args) -> Path:
+    """Return the deterministic result path without loading the dataset."""
+
+    fogs = int(args.fogs if args.fogs is not None else max(1, args.sensors // 10))
+    rho_s = 0.05 if args.rho_s is None else float(args.rho_s)
+    alpha = str(float(args.dirichlet_alpha))
+    return (
+        args.output_root
+        / args.scenario
+        / args.dataset.lower()
+        / f"N_{args.sensors}_M_{fogs}"
+        / args.baseline
+        / f"rho_{rho_s:g}_alpha_{alpha}"
+        / f"seed_{args.seed}"
+    )
+
+
+def _is_completed(args) -> bool:
+    """A run is resumable only after its final summary has been written."""
+
+    summary_path = _completed_run_path(args) / "summary.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    final = summary.get("final", {})
+    return (
+        summary.get("rounds") == args.rounds
+        and summary.get("dataset") == args.dataset.upper()
+        and summary.get("baseline") == args.baseline
+        and summary.get("seed") == args.seed
+        and final.get("round") == args.rounds
+    )
+
+
+def _run_or_skip(cli: argparse.Namespace, args) -> None:
+    if getattr(cli, "resume", True) and _is_completed(args):
+        print(f"SKIP completed: {_completed_run_path(args)}")
+        return
+    run_experiment(args)
 
 
 def _run_synthetic(
@@ -80,7 +131,7 @@ def _run_synthetic(
     args.samples_per_sensor = 24 if cli.quick else 128
     args.rho_s = rho_s
     args.dirichlet_alpha = alpha
-    run_experiment(args)
+    _run_or_skip(cli, args)
 
 
 def run_scalability(cli: argparse.Namespace) -> None:
@@ -158,7 +209,7 @@ def run_real(cli: argparse.Namespace) -> None:
                     args.seed = seed
                     args.dirichlet_alpha = alpha
                     args.rounds = 2 if cli.quick else 30
-                    run_experiment(args)
+                    _run_or_skip(cli, args)
 
 
 if __name__ == "__main__":

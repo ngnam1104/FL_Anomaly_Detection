@@ -1,52 +1,49 @@
-# Benchmark datasets
+# SMAP and MSL benchmark data
 
-Prepare all three public benchmarks on Windows:
+The Ubuntu experiment matrix uses the public Telemanom SMAP/MSL package,
+dataset version 1. Prepare it with:
 
-```powershell
-python -m scripts.prepare_benchmarks
+```bash
+.venv/bin/python -m scripts.prepare_benchmarks --dataset nasa
 ```
 
-The command downloads:
-
-- SMD from the OmniAnomaly `ServerMachineDataset` directory, pinned to commit
-  `7fb0e0acf89ea49908896bcc9f9e80fcfff6baf4`.
-- SMAP/MSL from the public Telemanom Kaggle package, dataset version 1.
-
-Downloaded archives stay under ignored `datasets/_downloads/`. Prepared data:
+`run_ubuntu.sh` performs this step automatically. The extracted layout is:
 
 ```text
 datasets/
-├── SMD/
-│   ├── train/*.txt
-│   ├── test/*.txt
-│   └── test_label/*.txt
+├── _downloads/
+│   └── nasa_smap_msl.zip
 └── telemanom/
-    ├── train/*.npy
-    ├── test/*.npy
-    └── labeled_anomalies.csv
+    ├── labeled_anomalies.csv
+    ├── train/
+    │   └── <channel>.npy
+    └── test/
+        └── <channel>.npy
 ```
 
-The paper configuration uses the first 10 SMD machines. SMAP keeps all 55
-channels as 55 FL clients with `D=25`; MSL keeps all 27 channels as 27 clients
-with `D=55`. Telemanom anomaly ranges are inclusive at both endpoints.
+Both the archive and extracted benchmark are ignored by Git.
 
-Sources:
+## Mapping source channels to 100 sensors
 
-- https://github.com/NetManAIOps/OmniAnomaly/tree/master/ServerMachineDataset
-- https://github.com/khundman/telemanom
-- https://www.kaggle.com/datasets/patrickfleith/nasa-anomaly-detection-dataset-smap-msl
-
-## Alternative processed layout
-
-Real benchmarks are intentionally not committed. Place processed arrays here:
+SMAP contains 55 source channels with feature dimension 25. MSL contains 27
+source channels with feature dimension 55. Every experiment nevertheless uses
+the same physical topology:
 
 ```text
-<NAME>_train.npy
-<NAME>_test.npy
-<NAME>_test_label.npy
+N = 100 stationary sensors
+M = 10 mobile fog/AUV aggregators
 ```
 
-where `<NAME>` is `SMD`, `SMAP`, or `MSL`. The alternative
-`<NAME>/{train.npy,test.npy,labels.npy}` layout is also supported.
+For each source channel, the first 90% of its normal training sequence is used
+for local training and the remaining 10% for normal-only threshold validation.
+The local-training sequences are split into 100 contiguous, non-overlapping
+sensor shards, allocated approximately in proportion to sequence length.
 
-For raw SMD, use `SMD/{train,test,test_label}/*.txt`.
+This mapping does not duplicate samples and does not mix samples from different
+source channels inside one sensor. Test sequences and inclusive anomaly ranges
+remain unchanged and are only used for evaluation.
+
+SMAP and MSL are trained and evaluated independently because their input
+dimensions differ. “Cross-dataset” here means applying the same topology,
+baselines and hyperparameters to both benchmarks, not training on SMAP and
+directly testing the same autoencoder on MSL.

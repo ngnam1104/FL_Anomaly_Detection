@@ -172,9 +172,40 @@ def test_telemanom_keeps_one_channel_per_client(tmp_path):
     assert bundle.input_dim == 25
     assert len(bundle.sensor_train) == 2
     assert bundle.details["channel_ids"] == ["A-1", "A-2"]
-    assert bundle.details["source_layout"] == "telemanom-per-channel"
+    assert bundle.details["source_layout"] == "telemanom-contiguous-sensor-shards"
     assert len(bundle.test_y) == 20
     assert int(bundle.test_y.sum()) == 3
+
+
+def test_telemanom_splits_entities_into_requested_sensor_count(tmp_path):
+    base = tmp_path / "telemanom"
+    (base / "train").mkdir(parents=True)
+    (base / "test").mkdir()
+    (base / "labeled_anomalies.csv").write_text(
+        "\n".join(
+            [
+                "chan_id,spacecraft,anomaly_sequences,class,num_values",
+                'A-1,SMAP,"[[2, 4]]",[point],20',
+                "A-2,SMAP,[],[point],20",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    for channel_index, channel_id in enumerate(("A-1", "A-2")):
+        train = np.full((20, 25), channel_index, dtype=np.float32)
+        test = np.full((10, 25), channel_index, dtype=np.float32)
+        np.save(base / "train" / f"{channel_id}.npy", train)
+        np.save(base / "test" / f"{channel_id}.npy", test)
+
+    bundle = load_real_benchmark("SMAP", tmp_path, 5)
+
+    assert len(bundle.sensor_train) == 5
+    assert all(len(samples) > 0 for samples in bundle.sensor_train.values())
+    assert sum(map(len, bundle.sensor_train.values())) == 36
+    assert bundle.details["source_entities"] == 2
+    assert len(bundle.details["sensor_channel_ids"]) == 5
+    assert set(bundle.details["sensor_channel_ids"]) == {"A-1", "A-2"}
 
 
 def test_hfl_smoke_run():

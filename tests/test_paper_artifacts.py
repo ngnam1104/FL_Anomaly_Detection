@@ -128,7 +128,7 @@ def _write_fixture(root: Path) -> None:
                     seed=seed,
                     alpha=alpha,
                 )
-    for dataset, sensors in {"SMD": 10, "SMAP": 55, "MSL": 27}.items():
+    for dataset in ("SMAP", "MSL"):
         for method in ALL_METHODS:
             for seed in (42, 43):
                 _write_run(
@@ -136,7 +136,7 @@ def _write_fixture(root: Path) -> None:
                     scenario="real",
                     dataset=dataset,
                     method=method,
-                    sensors=sensors,
+                    sensors=100,
                     seed=seed,
                     alpha=None,
                 )

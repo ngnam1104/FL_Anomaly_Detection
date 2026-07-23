@@ -2,8 +2,6 @@
 
 Hierarchical Federated Anomaly Detection for the Internet of Underwater Things.
 
-Mô phỏng ba tầng theo Omeke et al. (2026):
-
 ```text
 surface gateway
        ↑
@@ -12,187 +10,154 @@ mobile fog aggregators (AUVs)
 stationary deep-water sensors
 ```
 
-Sensor huấn luyện autoencoder không giám sát. Fog tổng hợp update, có thể trao
-đổi partial aggregate với fog lân cận, rồi gửi model tới gateway. Link chỉ tồn
-tại khi source level cần thiết để đạt target SNR không vượt `SLmax`.
+Sensor huấn luyện autoencoder không giám sát. Fog tổng hợp model update, có thể
+trao đổi partial aggregate với fog lân cận rồi gửi model lên gateway. Link chỉ
+tồn tại khi source level cần thiết để đạt target SNR không vượt `SLmax`.
 
-Đọc [tài liệu diff với FedKDL 2D OD](docs/FEDKDL_2D_OD_TO_ANOMALY_DIFF.md)
-để biết chính xác phần physics nào được giữ, phần nào thay đổi và lý do.
+Chi tiết phần kế thừa và phần thay đổi từ code FedKDL cũ nằm trong
+[docs/FEDKDL_2D_OD_TO_ANOMALY_DIFF.md](docs/FEDKDL_2D_OD_TO_ANOMALY_DIFF.md).
 
-## Thành phần
+## Cấu hình thực nghiệm SMAP/MSL
 
-- Thorp transmission loss, Wenz ambient noise và target-SNR power control.
-- Energy báo cáo gồm transmit + receive + local-training compute; communication
-  energy theo Eq. (20) vẫn được log riêng.
-- Sensor tĩnh; fog/AUV di động Gauss-Markov giữa các round.
-- Autoencoder `D→16→8→16→D`; `D=32` có đúng 1.352 tham số.
-- Top-K `rho_s=0.05`, INT8 và error feedback cho sensor upload.
-- Fog-to-fog và fog-to-gateway dùng model FP32.
-- Centralized, FedAvg, FedProx, HFL-NoCoop, HFL-Selective, HFL-Nearest.
-- Threshold percentile 99 trên validation normal-only.
-- Point-wise F1 cho synthetic và PA-F1 cho real benchmarks.
-- Local training song song bằng `ThreadPoolExecutor` trên CPU.
-- Log chi tiết, round CSV, metrics JSON và summary JSON.
+Ubuntu runner chỉ chạy hai benchmark:
 
-Thông số Table II nằm trong [config/settings.py](config/settings.py).
+- SMAP: input dimension `D=25`, 55 source telemetry channels.
+- MSL: input dimension `D=55`, 27 source telemetry channels.
 
-## Cài đặt Windows
+Mỗi dataset được ánh xạ thành cùng topology:
 
-```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+```text
+N = 100 stationary sensors
+M = 10 mobile fog/AUV aggregators
+T = 30 federated rounds
+seeds = 42, 43, 44
 ```
+
+Training sequence của các source channel được chia thành đúng 100 đoạn liên
+tục, không chồng lặp và không nhân bản sample. Mỗi sensor chỉ chứa shard của một
+source channel. SMAP và MSL được train/evaluate độc lập vì khác input dimension.
+
+Mỗi dataset chạy tuần tự đúng thứ tự:
+
+1. Centralised
+2. FedAvg
+3. FedProx
+4. HFL-NoCoop
+5. HFL-Selective
+6. HFL-Nearest
+
+Full matrix gồm `2 datasets × 6 methods × 3 seeds = 36 runs`.
 
 ## Chạy trên Ubuntu server
 
-Một script duy nhất có thể tạo virtualenv, cài PyTorch CPU và các dependency,
-tải/kiểm tra benchmark, sau đó chạy từng baseline:
+Một lệnh sẽ tạo virtual environment, cài PyTorch CPU và dependency, tải/kiểm
+tra SMAP/MSL, chạy đủ 36 run, vẽ Fig. 8 và sinh Table IV:
 
 ```bash
 bash run_ubuntu.sh all
 ```
 
-Full `all` gồm 150 run (3 seed, synthetic 20 round, real 30 round), nên nên chạy
-trong `tmux` hoặc dùng:
+Nên chạy smoke test trước. Quick mode vẫn kiểm tra đủ hai dataset và sáu
+baseline, nhưng chỉ dùng seed 42 và hai round:
+
+```bash
+QUICK=1 WORKERS=4 bash run_ubuntu.sh run
+```
+
+Chạy lâu sau khi đóng SSH:
 
 ```bash
 nohup env WORKERS=8 bash run_ubuntu.sh all > launcher.log 2>&1 &
 ```
 
-Dry-run trước khi chạy dài:
-
-```bash
-QUICK=1 WORKERS=4 bash run_ubuntu.sh run all
-```
-
-Chạy riêng một suite:
-
-```bash
-WORKERS=8 bash run_ubuntu.sh run scalability
-WORKERS=8 bash run_ubuntu.sh run compression
-WORKERS=8 bash run_ubuntu.sh run noniid
-WORKERS=8 bash run_ubuntu.sh run real
-```
-
-Các action khác:
+Các action:
 
 ```bash
 bash run_ubuntu.sh install
 bash run_ubuntu.sh prepare-data
-PREPARE_DATA=0 bash run_ubuntu.sh run real
+bash run_ubuntu.sh run
+PREPARE_DATA=0 WORKERS=8 bash run_ubuntu.sh run
 ```
 
-Raw log toàn phiên và bảng tổng hợp có timestamp (`*_results.csv`,
-`*_results.json`) nằm trong `results/runner_logs/`. Mỗi baseline/seed có thêm
-`training.log`, `rounds.csv`, `metrics.json` và `summary.json` trong thư mục
-experiment tương ứng. Khi hoàn tất full suite `all`, script tự sinh Figure
-4–8 và Table II–IV vào `results/paper/`.
+Các biến cấu hình runner:
 
-## Chạy một experiment
+- `WORKERS`: số sensor được local-train đồng thời, mặc định tối đa 8.
+- `QUICK=1`: một seed, hai round, nhưng vẫn chạy đủ sáu baseline.
+- `PREPARE_DATA=0`: bỏ qua download/extract khi data đã sẵn sàng.
+- `DATA_ROOT`, `OUTPUT_ROOT`, `VENV_DIR`, `PYTHON_BIN`: ghi đè đường dẫn/runtime.
 
-```powershell
-python -u main.py --scenario manual --dataset synthetic `
-  --baseline hfl-selective --sensors 50 --fogs 5 `
-  --rounds 20 --seed 42 --workers 8
-```
+## Log và kết quả
 
-Artifact:
+Raw log toàn phiên và result index có timestamp:
 
 ```text
-results/manual/synthetic/N_50_M_5/hfl-selective/rho_0.05_alpha_1.0/seed_42/
+results/runner_logs/
+├── <action>_smap_msl_<timestamp>.log
+├── <action>_smap_msl_<timestamp>_results.csv
+├── <action>_smap_msl_<timestamp>_results.json
+└── pip_freeze_<timestamp>.txt
+```
+
+Mỗi dataset/baseline/seed lưu riêng:
+
+```text
+results/real/<dataset>/N_100_M_10/<baseline>/rho_0.05_alpha_na/seed_<seed>/
 ├── training.log
 ├── rounds.csv
 ├── metrics.json
 └── summary.json
 ```
 
-`--workers` là số sensor train đồng thời. PyTorch mặc định dùng một intra-op
-thread cho mỗi worker để tránh CPU oversubscription.
-
-## Chạy các scenario của paper
-
-```powershell
-# Fig. 4, Fig. 5, Fig. 6(a), Table III
-.\run_windows.ps1 -Suite scalability -Workers 8
-
-# Fig. 6(b): rho=0.05 so với full FP32
-.\run_windows.ps1 -Suite compression -Workers 8
-
-# Fig. 7: Dirichlet alpha=0.1 và alpha=10^4
-.\run_windows.ps1 -Suite noniid -Workers 8
-
-# Fig. 8 và Table IV
-.\run_windows.ps1 -Suite real -Workers 8
-
-# Tất cả
-.\run_windows.ps1 -Suite all -Workers 8
-```
-
-Thêm `-Quick` để dùng một seed, hai round và tập synthetic nhỏ. Suite `real`
-vẫn cần SMD/SMAP/MSL ngay cả khi bật `-Quick`.
-
-## Sinh đúng hình và bảng Section VI
-
-Sau khi chạy đủ scenario:
-
-```powershell
-python -m scripts.paper.plot_all --results results --output results/paper
-```
-
-Có thể chạy riêng:
-
-```powershell
-python -m scripts.paper.fig4_convergence
-python -m scripts.paper.fig5_scalability
-python -m scripts.paper.fig6_engineering
-python -m scripts.paper.fig7_noniid
-python -m scripts.paper.fig8_real
-python -m scripts.paper.tables
-```
-
-Kết quả gồm Fig. 4–8 và Table II–IV dưới `results/paper/`.
-
-## Chuẩn bị SMD, SMAP và MSL
-
-Tải và giải nén đúng cấu trúc entity/client:
-
-```powershell
-python -m scripts.prepare_benchmarks
-```
-
-- SMD dùng 10 trong 28 machine, mỗi machine là một client `D=38`.
-- SMAP dùng 55 telemetry channel/client, `D=25`.
-- MSL dùng 27 telemetry channel/client, `D=55`.
-
-Chi tiết nguồn và layout nằm tại [datasets/README.md](datasets/README.md).
-
-Loader vẫn hỗ trợ layout processed tương thích ngược:
+Sau full run:
 
 ```text
-datasets/
-├── SMD_train.npy
-├── SMD_test.npy
-├── SMD_test_label.npy
-├── SMAP_train.npy
-├── SMAP_test.npy
-├── SMAP_test_label.npy
-├── MSL_train.npy
-├── MSL_test.npy
-└── MSL_test_label.npy
+results/paper/
+├── fig8_real_benchmarks.png
+├── table_iv_real.csv
+└── table_iv_real.md
 ```
 
-hoặc `datasets/<NAME>/{train.npy,test.npy,labels.npy}`. Raw SMD:
+`summary.json` và result index đều chứa communication energy, total modelled
+energy (`E_tx + E_rx + E_comp`), latency, participation, F1 và PA-F1.
+
+## Chạy một experiment thủ công
+
+```bash
+.venv/bin/python -u main.py \
+  --scenario manual \
+  --dataset SMAP \
+  --baseline hfl-selective \
+  --sensors 100 \
+  --fogs 10 \
+  --rounds 30 \
+  --seed 42 \
+  --workers 8
+```
+
+Các tên baseline hợp lệ:
 
 ```text
-datasets/SMD/{train,test,test_label}/*.txt
+centralized
+fedavg
+fedprox
+hfl-nocoop
+hfl-selective
+hfl-nearest
 ```
 
-Train được tách 90/10 để lấy validation normal-only. Chuẩn hóa chỉ dùng thống
-kê train; test label không được dùng để chọn threshold.
+## Dataset
+
+Runner chỉ tải package SMAP/MSL:
+
+```bash
+.venv/bin/python -m scripts.prepare_benchmarks --dataset nasa
+```
+
+Chi tiết source layout và cách chia 100 sensor nằm trong
+[datasets/README.md](datasets/README.md).
 
 ## Kiểm thử
 
-```powershell
-pytest -q
+```bash
+.venv/bin/python -m pytest -q
 ```

@@ -142,15 +142,19 @@ object detection.
 
 - Synthetic: ba seed, 20 round, `N ∈ {50, 150, 200}` cho convergence chính;
   `N=100` được dùng thêm ở các figure/table scalability và ablation.
-- SMD: mỗi machine là một entity/client, input dimension 38.
-- SMAP: 55 telemetry channel/client, input dimension 25.
-- MSL: 27 telemetry channel/client, input dimension 55.
+- Cross-dataset benchmark dùng SMAP (`D=25`) và MSL (`D=55`) độc lập.
+- Mỗi dataset dùng cùng topology `N=100, M=10`.
+- 55 SMAP source channels và 27 MSL source channels được chia thành đúng 100
+  contiguous, non-overlapping normal-training shards. Không lặp sample; mỗi
+  sensor shard chỉ thuộc một source channel.
 - Real-data experiments dùng 30 round.
 
 `run_experiments.py` mã hóa các suite `scalability`, `compression`, `noniid` và
-`real`. `scripts/paper/` sinh Figure 4–8 và Table II–IV. `run_ubuntu.sh` cài
-môi trường, chuẩn bị benchmark, chạy tuần tự baseline/seed và lưu raw log,
-round CSV, metrics JSON, summary JSON cùng result index của phiên.
+`real`. Ubuntu runner chỉ gọi suite `real` cho SMAP/MSL và chạy theo thứ tự
+Centralised, FedAvg, FedProx, HFL-NoCoop, HFL-Selective, HFL-Nearest.
+`scripts/paper/` sinh Figure 4–8 và Table II–IV. `run_ubuntu.sh` cài môi trường,
+chuẩn bị benchmark, chạy tuần tự baseline/seed và lưu raw log, round CSV,
+metrics JSON, summary JSON cùng result index của phiên.
 
 ## 6. Code cũ đã loại bỏ
 

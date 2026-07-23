@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# One-file Ubuntu runner for installation, benchmark preparation, and training.
+# Ubuntu runner for the SMAP/MSL N=100, M=10 real-data experiment matrix.
 #
 # Examples:
 #   bash run_ubuntu.sh all
 #   bash run_ubuntu.sh install
 #   bash run_ubuntu.sh prepare-data
-#   bash run_ubuntu.sh run scalability
-#   QUICK=1 WORKERS=4 bash run_ubuntu.sh run real
+#   bash run_ubuntu.sh run
+#   QUICK=1 WORKERS=4 bash run_ubuntu.sh run
 
 ACTION="${1:-all}"
-SUITE="${2:-${SUITE:-all}}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 VENV_DIR="${VENV_DIR:-.venv}"
 DATA_ROOT="${DATA_ROOT:-datasets}"
@@ -21,14 +20,10 @@ QUICK="${QUICK:-0}"
 PREPARE_DATA="${PREPARE_DATA:-1}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
 
-case "${SUITE}" in
-  scalability|compression|noniid|real|all) ;;
-  *)
-    echo "Invalid suite: ${SUITE}" >&2
-    echo "Choose: scalability, compression, noniid, real, all" >&2
-    exit 2
-    ;;
-esac
+if (( $# > 1 )); then
+  echo "Usage: bash run_ubuntu.sh [install|prepare-data|run|all]" >&2
+  exit 2
+fi
 
 if [[ -z "${WORKERS}" ]]; then
   CPU_COUNT="$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1)"
@@ -43,7 +38,7 @@ RUN_START_EPOCH="$(date +%s)"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 LOG_ROOT="${OUTPUT_ROOT}/runner_logs"
 mkdir -p "${LOG_ROOT}"
-MASTER_LOG="${LOG_ROOT}/${ACTION}_${SUITE}_${RUN_ID}.log"
+MASTER_LOG="${LOG_ROOT}/${ACTION}_smap_msl_${RUN_ID}.log"
 exec > >(tee -a "${MASTER_LOG}") 2>&1
 
 on_error() {
@@ -54,7 +49,9 @@ on_error() {
 }
 trap on_error ERR
 
-echo "action=${ACTION} suite=${SUITE} workers=${WORKERS} quick=${QUICK}"
+echo "action=${ACTION} datasets=SMAP,MSL sensors=100 fogs=10"
+echo "baselines=centralized,fedavg,fedprox,hfl-nocoop,hfl-selective,hfl-nearest"
+echo "workers=${WORKERS} quick=${QUICK}"
 echo "data_root=${DATA_ROOT} output_root=${OUTPUT_ROOT}"
 echo "raw_log=${MASTER_LOG}"
 
@@ -82,22 +79,24 @@ install_environment() {
 
 prepare_benchmarks() {
   local python="${VENV_DIR}/bin/python"
-  "${python}" -u -m scripts.prepare_benchmarks --datasets-root "${DATA_ROOT}"
+  "${python}" -u -m scripts.prepare_benchmarks \
+    --datasets-root "${DATA_ROOT}" \
+    --dataset nasa
   DATA_ROOT="${DATA_ROOT}" "${python}" - <<'PY'
 import os
 from anomaly_detection.data import load_real_benchmark
 
 root = os.environ["DATA_ROOT"]
-for name, clients, expected_dim in (
-    ("SMD", 10, 38),
-    ("SMAP", 55, 25),
-    ("MSL", 27, 55),
+for name, expected_dim in (
+    ("SMAP", 25),
+    ("MSL", 55),
 ):
-    bundle = load_real_benchmark(name, root, clients, seed=42)
-    assert len(bundle.sensor_train) == clients
+    bundle = load_real_benchmark(name, root, 100, seed=42)
+    assert len(bundle.sensor_train) == 100
     assert bundle.input_dim == expected_dim
     print(
-        f"validated {name}: clients={clients} D={bundle.input_dim} "
+        f"validated {name}: sensors=100 source_entities="
+        f"{bundle.details['source_entities']} D={bundle.input_dim} "
         f"train={sum(map(len, bundle.sensor_train.values()))} "
         f"validation={len(bundle.validation_normal)} "
         f"test={len(bundle.test_x)} anomalies={int(bundle.test_y.sum())}"
@@ -109,7 +108,7 @@ run_experiments() {
   local python="${VENV_DIR}/bin/python"
   local arguments=(
     -u run_experiments.py
-    --suite "${SUITE}"
+    --suite real
     --data-root "${DATA_ROOT}"
     --output-root "${OUTPUT_ROOT}"
     --workers "${WORKERS}"
@@ -129,8 +128,12 @@ run_experiments() {
 
   "${python}" "${arguments[@]}"
 
-  if [[ "${SUITE}" == "all" && "${QUICK}" != "1" ]]; then
-    "${python}" -m scripts.paper.plot_all \
+  if [[ "${QUICK}" != "1" ]]; then
+    "${python}" -m scripts.paper.fig8_real \
+      --results "${OUTPUT_ROOT}" \
+      --output "${OUTPUT_ROOT}/paper"
+    "${python}" -m scripts.paper.tables \
+      --only real \
       --results "${OUTPUT_ROOT}" \
       --output "${OUTPUT_ROOT}/paper"
   fi
@@ -138,9 +141,9 @@ run_experiments() {
 
 export_session_results() {
   local python="${VENV_DIR}/bin/python"
-  local result_csv="${LOG_ROOT}/${ACTION}_${SUITE}_${RUN_ID}_results.csv"
-  local result_json="${LOG_ROOT}/${ACTION}_${SUITE}_${RUN_ID}_results.json"
-  OUTPUT_ROOT="${OUTPUT_ROOT}" SUITE="${SUITE}" \
+  local result_csv="${LOG_ROOT}/${ACTION}_smap_msl_${RUN_ID}_results.csv"
+  local result_json="${LOG_ROOT}/${ACTION}_smap_msl_${RUN_ID}_results.json"
+  OUTPUT_ROOT="${OUTPUT_ROOT}" \
     RUN_START_EPOCH="${RUN_START_EPOCH}" \
     RESULT_CSV="${result_csv}" RESULT_JSON="${result_json}" \
     "${python}" - <<'PY'
@@ -150,9 +153,6 @@ import os
 from pathlib import Path
 
 root = Path(os.environ["OUTPUT_ROOT"])
-suite = os.environ["SUITE"]
-allowed = {"scalability", "compression", "noniid", "real"}
-selected = allowed if suite == "all" else {suite}
 started_at = int(os.environ["RUN_START_EPOCH"])
 rows = []
 
@@ -161,7 +161,9 @@ for path in root.rglob("summary.json"):
         continue
     with path.open(encoding="utf-8") as handle:
         summary = json.load(handle)
-    if summary.get("scenario") not in selected:
+    if summary.get("scenario") != "real":
+        continue
+    if summary.get("dataset") not in {"SMAP", "MSL"}:
         continue
     final = summary.get("final", {})
     topology = summary.get("topology", {})
@@ -252,4 +254,4 @@ esac
 
 echo "COMPLETE"
 echo "Raw master log: ${MASTER_LOG}"
-echo "Per-run artifacts: ${OUTPUT_ROOT}/<scenario>/<dataset>/N_*/<baseline>/.../"
+echo "Per-run artifacts: ${OUTPUT_ROOT}/real/<dataset>/N_100_M_10/<baseline>/.../"

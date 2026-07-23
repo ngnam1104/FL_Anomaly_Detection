@@ -69,7 +69,7 @@ def table_iv(results: Path, output: Path) -> None:
         if method_rows.empty:
             continue
         row = {"Method": METHOD_LABELS[method]}
-        for dataset in ("SMD", "SMAP", "MSL"):
+        for dataset in ("SMAP", "MSL"):
             group = method_rows[method_rows["dataset"] == dataset]
             row[f"{dataset} PA-F1"] = (
                 f"{group['pa_f1'].mean():.4f} ± "
@@ -87,11 +87,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--results", type=Path, default=Path("results"))
     parser.add_argument("--output", type=Path, default=Path("results/paper"))
+    parser.add_argument("--only", choices=("all", "real"), default="all")
     parser.add_argument("--skip-result-tables", action="store_true")
     args = parser.parse_args()
-    table_ii(args.output)
+    if args.only == "all":
+        table_ii(args.output)
     if not args.skip_result_tables:
-        table_iii(args.results, args.output)
+        if args.only == "all":
+            table_iii(args.results, args.output)
         table_iv(args.results, args.output)
 
 

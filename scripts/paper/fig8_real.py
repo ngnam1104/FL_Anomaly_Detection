@@ -23,7 +23,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("results/paper"))
     args = parser.parse_args()
     runs, _ = load_runs(args.results, "real")
-    datasets = ("SMD", "SMAP", "MSL")
+    datasets = ("SMAP", "MSL")
     methods = ordered_methods(runs)
     x = np.arange(len(datasets))
     width = 0.82 / max(1, len(methods))

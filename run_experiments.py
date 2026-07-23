@@ -130,15 +130,13 @@ def run_real(cli: argparse.Namespace) -> None:
     """Fig. 8 and Table IV."""
 
     seeds = SEEDS[:1] if cli.quick else SEEDS
-    datasets = {"SMD": 10, "SMAP": 55, "MSL": 27}
-    methods = ("hfl-selective",) if cli.quick else REAL_METHODS
-    for dataset, sensors in datasets.items():
-        for method in methods:
+    for dataset in ("SMAP", "MSL"):
+        for method in REAL_METHODS:
             for seed in seeds:
                 args = _base_args(cli, "real")
                 args.dataset = dataset
-                args.sensors = sensors
-                args.fogs = max(1, sensors // 10)
+                args.sensors = 100
+                args.fogs = 10
                 args.baseline = method
                 args.seed = seed
                 args.rounds = 2 if cli.quick else 30

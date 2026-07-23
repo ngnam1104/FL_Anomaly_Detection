@@ -51,6 +51,43 @@ def _partition_rows(data: np.ndarray, sensor_count: int, seed: int) -> Dict[int,
     }
 
 
+def _partition_entity_sequences(
+    parts: list[np.ndarray],
+    entity_ids: list[str],
+    sensor_count: int,
+) -> tuple[list[np.ndarray], list[str]]:
+    """Split entity sequences into contiguous, non-overlapping sensor shards."""
+
+    if sensor_count < len(parts):
+        raise ValueError(
+            f"Cannot map {len(parts)} source entities to only {sensor_count} sensors"
+        )
+    lengths = np.asarray([len(part) for part in parts], dtype=np.int64)
+    if sensor_count > int(lengths.sum()):
+        raise ValueError(
+            f"Requested {sensor_count} sensors but only {int(lengths.sum())} "
+            "normal training rows are available"
+        )
+    allocations = np.ones(len(parts), dtype=np.int64)
+    for _ in range(sensor_count - len(parts)):
+        eligible = allocations < lengths
+        scores = np.where(eligible, lengths / allocations, -np.inf)
+        entity_index = int(np.argmax(scores))
+        if not np.isfinite(scores[entity_index]):
+            raise ValueError("Unable to create non-empty sensor partitions")
+        allocations[entity_index] += 1
+
+    sensor_parts: list[np.ndarray] = []
+    sensor_entities: list[str] = []
+    for part, entity_id, shard_count in zip(parts, entity_ids, allocations):
+        shards = np.array_split(part, int(shard_count))
+        if any(len(shard) == 0 for shard in shards):
+            raise ValueError(f"{entity_id}: empty sensor shard generated")
+        sensor_parts.extend(shards)
+        sensor_entities.extend([entity_id] * len(shards))
+    return sensor_parts, sensor_entities
+
+
 def make_synthetic(
     sensor_count: int,
     *,
@@ -227,11 +264,10 @@ def _load_telemanom_bundle(
         (row for row in rows if row.get("spacecraft", "").upper() == dataset),
         key=lambda row: row[channel_key],
     )
-    if sensor_count > len(selected):
-        raise ValueError(
-            f"{dataset} has {len(selected)} channels, requested {sensor_count}"
-        )
-    selected = selected[:sensor_count]
+    if sensor_count <= 0:
+        raise ValueError("sensor_count must be positive")
+    if sensor_count < len(selected):
+        selected = selected[:sensor_count]
     if not selected:
         raise ValueError(f"No {dataset} channels found in labeled_anomalies.csv")
 
@@ -288,9 +324,12 @@ def _load_telemanom_bundle(
     mean = pooled_train.mean(axis=0, keepdims=True)
     std = pooled_train.std(axis=0, keepdims=True)
     std[std < 1e-6] = 1.0
+    sensor_parts, sensor_channel_ids = _partition_entity_sequences(
+        train_parts, channel_ids, sensor_count
+    )
     sensor_train = {
         sensor_id: torch.as_tensor((part - mean) / std, dtype=torch.float32)
-        for sensor_id, part in enumerate(train_parts)
+        for sensor_id, part in enumerate(sensor_parts)
     }
     validation = np.concatenate(validation_parts)
     test = np.concatenate(tests)
@@ -305,9 +344,11 @@ def _load_telemanom_bundle(
         test_y=np.concatenate(labels),
         details={
             "entities": len(sensor_train),
+            "source_entities": len(channel_ids),
             "channel_ids": channel_ids,
+            "sensor_channel_ids": sensor_channel_ids,
             "anomaly_segments": anomaly_segments,
-            "source_layout": "telemanom-per-channel",
+            "source_layout": "telemanom-contiguous-sensor-shards",
         },
     )
 

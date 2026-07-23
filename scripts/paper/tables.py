@@ -63,27 +63,27 @@ def table_iii(results: Path, output: Path) -> None:
 
 def table_iv(results: Path, output: Path) -> None:
     runs, _ = load_runs(results, "real")
+    runs = runs[runs["alpha"].isna()]
+    if runs.empty:
+        raise ValueError(
+            "Table IV requires paper real-data runs with partition_alpha=None"
+        )
     rows = []
     for method in METHOD_ORDER:
         method_rows = runs[runs["method"] == method]
         if method_rows.empty:
             continue
         row = {"Method": METHOD_LABELS[method]}
-        for dataset in ("SMAP", "MSL"):
-            for alpha, alpha_label in ((0.1, "0.1"), (1.0e4, "10^4")):
-                group = method_rows[
-                    (method_rows["dataset"] == dataset)
-                    & (method_rows["alpha"] == alpha)
-                ]
-                prefix = f"{dataset} alpha={alpha_label}"
-                row[f"{prefix} PA-F1"] = (
-                    f"{group['pa_f1'].mean():.4f} ± "
-                    f"{group['pa_f1'].std(ddof=0):.4f}"
-                )
-                row[f"{prefix} E (J)"] = (
-                    f"{group['energy_j'].mean():.1f} ± "
-                    f"{group['energy_j'].std(ddof=0):.1f}"
-                )
+        for dataset in ("SMD", "SMAP", "MSL"):
+            group = method_rows[method_rows["dataset"] == dataset]
+            row[f"{dataset} PA-F1"] = (
+                f"{group['pa_f1'].mean():.4f} ± "
+                f"{group['pa_f1'].std(ddof=0):.4f}"
+            )
+            row[f"{dataset} E (J)"] = (
+                f"{group['energy_j'].mean():.1f} ± "
+                f"{group['energy_j'].std(ddof=0):.1f}"
+            )
         rows.append(row)
     _write(pd.DataFrame(rows), output, "table_iv_real")
 

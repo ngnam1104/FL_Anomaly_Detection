@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# One-time Ubuntu setup: Python environment, dependencies, SMAP/MSL data, and
-# deterministic partition validation for every paper seed and Dirichlet mode.
+# One-time Ubuntu setup: Python environment, all three real benchmarks, and
+# deterministic validation for every paper seed.
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 VENV_DIR="${VENV_DIR:-.venv}"
@@ -30,8 +30,8 @@ on_error() {
 }
 trap on_error ERR
 
-echo "setup datasets=SMAP,MSL sensors=100 fogs=10"
-echo "dirichlet_alpha=0.1,10000 seeds=42,43,44"
+echo "setup real_datasets=SMD,SMAP,MSL sensors=100 fogs=10"
+echo "real_partition=contiguous_source_shards seeds=42,43,44"
 echo "venv=${VENV_DIR} data_root=${DATA_ROOT}"
 echo "raw_log=${SETUP_LOG}"
 
@@ -70,78 +70,59 @@ echo "Environment ready: $("${PYTHON}" --version)"
 
 "${PYTHON}" -u -m scripts.prepare_benchmarks \
   --datasets-root "${DATA_ROOT}" \
-  --dataset nasa
+  --dataset all
 
 DATA_ROOT="${DATA_ROOT}" "${PYTHON}" - <<'PY'
 import json
 import os
-from itertools import product
 from pathlib import Path
 
 from anomaly_detection.data import load_real_benchmark
 
 root = Path(os.environ["DATA_ROOT"])
-datasets = (("SMAP", 25, 55), ("MSL", 55, 27))
-alphas = (0.1, 1.0e4)
+datasets = (("SMD", 38), ("SMAP", 25), ("MSL", 55))
 seeds = (42, 43, 44)
 partitions = []
 
-for (name, expected_dim, expected_sources), alpha, seed in product(
-    datasets, alphas, seeds
-):
-    bundle = load_real_benchmark(
-        name,
-        root,
-        100,
-        seed=seed,
-        dirichlet_alpha=alpha,
-    )
-    sizes = [len(samples) for samples in bundle.sensor_train.values()]
-    entropy = bundle.details["mean_normalised_client_entropy"]
-    assert len(sizes) == 100
-    assert min(sizes) > 0
-    assert bundle.input_dim == expected_dim
-    assert bundle.details["source_entities"] == expected_sources
-    partitions.append(
-        {
-            "dataset": name,
-            "alpha": alpha,
-            "seed": seed,
-            "sensors": 100,
-            "fogs": 10,
-            "input_dim": bundle.input_dim,
-            "source_entities": bundle.details["source_entities"],
-            "train_rows": sum(sizes),
-            "min_sensor_rows": min(sizes),
-            "max_sensor_rows": max(sizes),
-            "mean_normalised_client_entropy": entropy,
-        }
-    )
-    print(
-        f"validated {name}: alpha={alpha:g} seed={seed} N=100 M=10 "
-        f"D={bundle.input_dim} rows={sum(sizes)} "
-        f"min/max={min(sizes)}/{max(sizes)} entropy={entropy:.4f}"
-    )
-
-for name, _, _ in datasets:
+for name, expected_dim in datasets:
     for seed in seeds:
-        by_alpha = {
-            row["alpha"]: row["mean_normalised_client_entropy"]
-            for row in partitions
-            if row["dataset"] == name and row["seed"] == seed
-        }
-        assert by_alpha[0.1] < by_alpha[1.0e4], (
-            f"{name} seed={seed}: alpha=0.1 must be more non-IID than alpha=1e4"
+        bundle = load_real_benchmark(name, root, 100, seed=seed)
+        sizes = [len(samples) for samples in bundle.sensor_train.values()]
+        assert len(sizes) == 100
+        assert min(sizes) > 0
+        assert bundle.input_dim == expected_dim
+        source_entities = bundle.details["source_entities"]
+        assert source_entities > 0
+        if name == "SMD":
+            assert source_entities == 10
+        partitions.append(
+            {
+                "dataset": name,
+                "alpha": None,
+                "seed": seed,
+                "sensors": 100,
+                "fogs": 10,
+                "input_dim": bundle.input_dim,
+                "source_entities": source_entities,
+                "train_rows": sum(sizes),
+                "min_sensor_rows": min(sizes),
+                "max_sensor_rows": max(sizes),
+            }
+        )
+        print(
+            f"validated {name}: seed={seed} N=100 M=10 D={bundle.input_dim} "
+            f"sources={source_entities} rows={sum(sizes)} "
+            f"min/max={min(sizes)}/{max(sizes)}"
         )
 
 manifest = {
-    "schema_version": 1,
-    "datasets": ["SMAP", "MSL"],
+    "schema_version": 2,
+    "datasets": ["SMD", "SMAP", "MSL"],
     "sensors": 100,
     "fogs": 10,
-    "alphas": list(alphas),
+    "alphas": [None],
     "seeds": list(seeds),
-    "partition_scheme": "source-entity-dirichlet",
+    "partition_scheme": "contiguous-entity-shards",
     "partitions": partitions,
 }
 manifest_path = root / "partition_manifest.json"

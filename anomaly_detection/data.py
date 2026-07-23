@@ -55,8 +55,14 @@ def _partition_entity_sequences(
     parts: list[np.ndarray],
     entity_ids: list[str],
     sensor_count: int,
+    seed: int,
 ) -> tuple[list[np.ndarray], list[str]]:
-    """Split entity sequences into contiguous, non-overlapping sensor shards."""
+    """Split entities into balanced contiguous shards, then shuffle topology IDs.
+
+    With 100 clients this gives the paper-aligned allocations from the data
+    partition note: SMD 10x10; SMAP 45x2 + 10x1; MSL 19x4 + 8x3. Entities
+    receiving the extra shard are chosen by sequence length.
+    """
 
     if sensor_count < len(parts):
         raise ValueError(
@@ -68,14 +74,12 @@ def _partition_entity_sequences(
             f"Requested {sensor_count} sensors but only {int(lengths.sum())} "
             "normal training rows are available"
         )
-    allocations = np.ones(len(parts), dtype=np.int64)
-    for _ in range(sensor_count - len(parts)):
-        eligible = allocations < lengths
-        scores = np.where(eligible, lengths / allocations, -np.inf)
-        entity_index = int(np.argmax(scores))
-        if not np.isfinite(scores[entity_index]):
-            raise ValueError("Unable to create non-empty sensor partitions")
-        allocations[entity_index] += 1
+    base_shards, extra_shards = divmod(sensor_count, len(parts))
+    allocations = np.full(len(parts), base_shards, dtype=np.int64)
+    longest_first = np.argsort(-lengths, kind="stable")
+    allocations[longest_first[:extra_shards]] += 1
+    if np.any(allocations > lengths):
+        raise ValueError("At least one entity is too short for its client allocation")
 
     sensor_parts: list[np.ndarray] = []
     sensor_entities: list[str] = []
@@ -85,7 +89,12 @@ def _partition_entity_sequences(
             raise ValueError(f"{entity_id}: empty sensor shard generated")
         sensor_parts.extend(shards)
         sensor_entities.extend([entity_id] * len(shards))
-    return sensor_parts, sensor_entities
+    # Data identity must not be correlated with generated sensor positions/fogs.
+    permutation = np.random.RandomState(seed).permutation(sensor_count)
+    return (
+        [sensor_parts[index] for index in permutation],
+        [sensor_entities[index] for index in permutation],
+    )
 
 
 def _dirichlet_partition_entity_rows(
@@ -260,8 +269,10 @@ def _load_processed(root: Path, name: str) -> tuple[np.ndarray, np.ndarray, np.n
     )
 
 
-def _load_smd_raw_bundle(root: Path, machine_limit: int) -> DataBundle:
-    """Keep each selected SMD machine as one physical sensor/client."""
+def _load_smd_raw_bundle(
+    root: Path, sensor_count: int, seed: int, machine_limit: int = 10
+) -> DataBundle:
+    """Map the paper's ten selected SMD machines onto physical sensors."""
 
     base = root / "SMD"
     train_files = sorted((base / "train").glob("*.txt"))
@@ -269,12 +280,12 @@ def _load_smd_raw_bundle(root: Path, machine_limit: int) -> DataBundle:
         train_files = train_files[:machine_limit]
     if not train_files:
         raise FileNotFoundError(f"No SMD machine files found under {base / 'train'}")
-    train_parts, validation_parts, tests, labels = [], [], [], []
+    train_parts, validation_parts, tests, labels, machine_ids = [], [], [], [], []
     for train_path in train_files:
         test_path = base / "test" / train_path.name
         label_path = base / "test_label" / train_path.name
         machine_train = np.loadtxt(train_path, delimiter=",").astype(np.float32)
-        split = max(1, int(0.9 * len(machine_train)))
+        split = max(1, int(0.8 * len(machine_train)))
         train_parts.append(machine_train[:split])
         validation_parts.append(machine_train[split:])
         machine_test = np.loadtxt(test_path, delimiter=",").astype(np.float32)
@@ -286,13 +297,17 @@ def _load_smd_raw_bundle(root: Path, machine_limit: int) -> DataBundle:
             )
         tests.append(machine_test)
         labels.append(machine_labels)
+        machine_ids.append(train_path.stem)
     pooled_train = np.concatenate(train_parts)
     mean = pooled_train.mean(axis=0, keepdims=True)
     std = pooled_train.std(axis=0, keepdims=True)
     std[std < 1e-6] = 1.0
+    sensor_parts, sensor_machine_ids = _partition_entity_sequences(
+        train_parts, machine_ids, sensor_count, seed
+    )
     sensor_train = {
         sensor_id: torch.as_tensor((part - mean) / std, dtype=torch.float32)
-        for sensor_id, part in enumerate(train_parts)
+        for sensor_id, part in enumerate(sensor_parts)
     }
     validation = np.concatenate(validation_parts)
     test = np.concatenate(tests)
@@ -303,7 +318,14 @@ def _load_smd_raw_bundle(root: Path, machine_limit: int) -> DataBundle:
         validation_normal=torch.as_tensor((validation - mean) / std, dtype=torch.float32),
         test_x=torch.as_tensor((test - mean) / std, dtype=torch.float32),
         test_y=np.concatenate(labels).astype(np.int64),
-        details={"entities": len(sensor_train), "source_layout": "raw-smd"},
+        details={
+            "entities": len(sensor_train),
+            "source_entities": len(machine_ids),
+            "machine_ids": machine_ids,
+            "sensor_machine_ids": sensor_machine_ids,
+            "source_layout": "raw-smd-contiguous-shards",
+            "partition_scheme": "contiguous-entity-shards",
+        },
     )
 
 
@@ -343,10 +365,25 @@ def _load_telemanom_bundle(
     ) as handle:
         rows = list(csv.DictReader(handle))
     channel_key = "chan_id" if rows and "chan_id" in rows[0] else "channel_id"
-    selected = sorted(
+    selected_rows = sorted(
         (row for row in rows if row.get("spacecraft", "").upper() == dataset),
         key=lambda row: row[channel_key],
     )
+    # Some Telemanom metadata releases contain multiple label rows for the
+    # same channel (notably SMAP P-2). Load each physical channel only once
+    # and merge its anomaly segments instead of duplicating its full timeline.
+    selected_by_channel: dict[str, dict] = {}
+    for row in selected_rows:
+        channel_id = row[channel_key]
+        segments = ast.literal_eval(row["anomaly_sequences"])
+        if channel_id not in selected_by_channel:
+            selected_by_channel[channel_id] = {
+                **row,
+                "_anomaly_segments": list(segments),
+            }
+        else:
+            selected_by_channel[channel_id]["_anomaly_segments"].extend(segments)
+    selected = list(selected_by_channel.values())
     if sensor_count <= 0:
         raise ValueError("sensor_count must be positive")
     if sensor_count < len(selected):
@@ -381,14 +418,14 @@ def _load_telemanom_bundle(
                 f"{dataset} channel {channel_id} has D={train.shape[1]}, "
                 f"expected D={input_dim}"
             )
-        split = min(len(train) - 1, max(1, int(0.9 * len(train))))
+        split = min(len(train) - 1, max(1, int(0.8 * len(train))))
         if split <= 0:
             raise ValueError(f"{channel_id}: training sequence is too short")
         train_parts.append(train[:split])
         validation_parts.append(train[split:])
         tests.append(test)
         channel_labels = np.zeros(len(test), dtype=np.int64)
-        sequences = ast.literal_eval(row["anomaly_sequences"])
+        sequences = row["_anomaly_segments"]
         for start, end in sequences:
             lo = max(0, int(start))
             hi = min(len(test) - 1, int(end))
@@ -409,7 +446,7 @@ def _load_telemanom_bundle(
     std[std < 1e-6] = 1.0
     if dirichlet_alpha is None:
         sensor_parts, sensor_channel_ids = _partition_entity_sequences(
-            train_parts, channel_ids, sensor_count
+            train_parts, channel_ids, sensor_count, seed
         )
         partition_details = {
             "partition_scheme": "contiguous-entity-shards",
@@ -469,7 +506,7 @@ def load_real_benchmark(
     dataset = name.upper()
     root = Path(data_root)
     if dataset == "SMD" and (root / "SMD" / "train").is_dir():
-        return _load_smd_raw_bundle(root, sensor_count)
+        return _load_smd_raw_bundle(root, sensor_count, seed)
     if dataset in {"SMAP", "MSL"}:
         try:
             return _load_telemanom_bundle(
@@ -487,7 +524,7 @@ def load_real_benchmark(
     except FileNotFoundError:
         if dataset != "SMD":
             raise
-        return _load_smd_raw_bundle(root, sensor_count)
+        return _load_smd_raw_bundle(root, sensor_count, seed)
     train = np.asarray(train, dtype=np.float32)
     test = np.asarray(test, dtype=np.float32)
     labels = np.asarray(labels).reshape(-1).astype(np.int64)

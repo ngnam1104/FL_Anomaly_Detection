@@ -17,27 +17,28 @@ tồn tại khi source level cần thiết để đạt target SNR không vượ
 Chi tiết phần kế thừa và phần thay đổi từ code FedKDL cũ nằm trong
 [docs/FEDKDL_2D_OD_TO_ANOMALY_DIFF.md](docs/FEDKDL_2D_OD_TO_ANOMALY_DIFF.md).
 
-## Cấu hình thực nghiệm SMAP/MSL
+## Cấu hình thực nghiệm của paper
 
-Ubuntu runner chỉ chạy hai benchmark:
+Runner tái tạo toàn bộ Fig. 4-8 và Table II-IV:
 
-- SMAP: input dimension `D=25`, 55 source telemetry channels.
+- synthetic: scalability, compression và non-IID sensitivity.
+- SMD: `D=38`, 10 source machines.
+- SMAP: input dimension `D=25`; PDF reports 55 rows, while the bundled
+  metadata resolves to 54 unique channels after merging duplicate `P-2`.
 - MSL: input dimension `D=55`, 27 source telemetry channels.
 
-Mỗi dataset được ánh xạ thành cùng topology:
+Ba benchmark thật được ánh xạ thành cùng topology:
 
 ```text
 N = 100 stationary sensors
 M = 10 mobile fog/AUV aggregators
 T = 30 federated rounds
 seeds = 42, 43, 44
-Dirichlet alpha = 0.1 and 10^4
 ```
 
-Normal-training rows được phân phối cho đúng 100 sensor theo source-channel
-Dirichlet: `α=0.1` là strongly non-IID, `α=10^4` là near-IID. Không sample nào
-bị lặp hoặc bỏ; validation/test giữ nguyên. SMAP và MSL được train/evaluate độc
-lập vì khác input dimension.
+Các source machine/channel được chia thành các shard liên tục, không lặp hoặc
+bỏ sample, để tạo đúng 100 sensor; validation/test giữ nguyên. Thí nghiệm
+Dirichlet `α=0.1` và `α=10^4` của Fig. 7 dùng dữ liệu synthetic như trong paper.
 
 Mỗi dataset chạy tuần tự đúng thứ tự:
 
@@ -48,7 +49,12 @@ Mỗi dataset chạy tuần tự đúng thứ tự:
 5. HFL-Selective
 6. HFL-Nearest
 
-Full matrix gồm `2 datasets × 2 α × 6 methods × 3 seeds = 72 runs`.
+Full matrix gồm 150 run:
+
+- scalability: `4 N × 4 methods × 3 seeds = 48`;
+- compression: `4 methods × 2 ρ × 3 seeds = 24`;
+- non-IID: `4 methods × 2 α × 3 seeds = 24`;
+- real: `3 datasets × 6 methods × 3 seeds = 54`.
 
 ## Chạy trên Ubuntu server
 
@@ -76,20 +82,22 @@ INSTALL_SYSTEM_VENV=1 bash setup_ubuntu.sh
 
 - Tạo `.venv`.
 - Cài PyTorch CPU và toàn bộ `requirements.txt`.
-- Tải và giải nén SMAP/MSL.
-- Sinh và kiểm tra partition cho 2 dataset × 2 α × 3 seed.
+- Tải và giải nén SMD, SMAP và MSL.
+- Sinh và kiểm tra real-data partition cho 3 dataset × 3 seed.
 - Ghi `datasets/partition_manifest.json` và setup log.
 
 ### 2. Chạy các kịch bản
 
-Nên chạy smoke test trước. Quick mode vẫn kiểm tra đủ hai dataset, hai giá trị
-α và sáu baseline, nhưng chỉ dùng seed 42 và hai round (`24 runs`):
+Nên chạy smoke test trước. Quick mode đi qua cả bốn scenario, ba real dataset
+và sáu baseline, nhưng chỉ dùng seed 42, hai round và ma trận synthetic rút gọn
+(`23 runs`):
 
 ```bash
 QUICK=1 WORKERS=4 bash run_scenarios.sh
 ```
 
-Chạy đủ 72 run, sau đó sinh Fig. 8 và Table IV:
+Chạy đủ 150 run, kiểm tra tính đầy đủ/hữu hạn của kết quả, sau đó sinh toàn bộ
+Fig. 4-8 và Table II-IV:
 
 ```bash
 WORKERS=8 bash run_scenarios.sh
@@ -120,15 +128,15 @@ results/setup_logs/
 └── pip_freeze_<timestamp>.txt
 
 results/runner_logs/
-├── smap_msl_<timestamp>.log
-├── smap_msl_<timestamp>_results.csv
-└── smap_msl_<timestamp>_results.json
+├── paper_all_<timestamp>.log
+├── paper_all_<timestamp>_results.csv
+└── paper_all_<timestamp>_results.json
 ```
 
 Mỗi dataset/baseline/seed lưu riêng:
 
 ```text
-results/real/<dataset>/N_100_M_10/<baseline>/rho_0.05_alpha_<alpha>/seed_<seed>/
+results/<scenario>/<dataset>/N_<N>_M_<M>/<baseline>/rho_<rho>_alpha_<alpha>/seed_<seed>/
 ├── training.log
 ├── rounds.csv
 ├── metrics.json
@@ -139,9 +147,14 @@ Sau full run:
 
 ```text
 results/paper/
+├── fig4_convergence.png
+├── fig5_scalability.png
+├── fig6_engineering.png
+├── fig7_noniid.png
 ├── fig8_real_benchmarks.png
-├── table_iv_real.csv
-└── table_iv_real.md
+├── table_ii_parameters.{csv,md}
+├── table_iii_scalability.{csv,md}
+└── table_iv_real.{csv,md}
 ```
 
 `summary.json` và result index đều chứa communication energy, total modelled
@@ -174,10 +187,10 @@ hfl-nearest
 
 ## Dataset
 
-Runner chỉ tải package SMAP/MSL:
+Chuẩn bị cả ba benchmark thật:
 
 ```bash
-.venv/bin/python -m scripts.prepare_benchmarks --dataset nasa
+.venv/bin/python -m scripts.prepare_benchmarks --dataset all
 ```
 
 Chi tiết source layout và cách chia 100 sensor nằm trong

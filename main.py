@@ -49,10 +49,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--samples-per-sensor", type=int, default=128)
     parser.add_argument("--heterogeneity", type=float, default=0.35)
-    parser.add_argument("--dirichlet-alpha", type=float, default=1.0)
+    parser.add_argument(
+        "--dirichlet-alpha",
+        type=float,
+        default=None,
+        help="Client-partition Dirichlet alpha; omit for the paper's real-data split.",
+    )
     parser.add_argument("--local-epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--learning-rate", type=float, default=None)
+    parser.add_argument("--max-grad-norm", type=float, default=None)
     parser.add_argument("--rho-s", type=float, default=None)
     parser.add_argument("--mobility-speed", type=float, default=None)
     parser.add_argument("--no-mobility", action="store_true")
@@ -117,6 +123,8 @@ def run_experiment(args: argparse.Namespace) -> Path:
         learn.LOCAL_BATCH_SIZE = int(args.batch_size)
     if args.learning_rate is not None:
         learn.LOCAL_LR = float(args.learning_rate)
+    if args.max_grad_norm is not None:
+        learn.MAX_GRAD_NORM = float(args.max_grad_norm)
     if args.rho_s is not None:
         learn.RHO_S = float(args.rho_s)
 
@@ -126,7 +134,9 @@ def run_experiment(args: argparse.Namespace) -> Path:
             feature_dim=learn.FEATURE_DIM,
             samples_per_sensor=args.samples_per_sensor,
             heterogeneity=args.heterogeneity,
-            dirichlet_alpha=args.dirichlet_alpha,
+            dirichlet_alpha=(
+                1.0 if args.dirichlet_alpha is None else args.dirichlet_alpha
+            ),
             seed=args.seed,
         )
     else:
@@ -183,7 +193,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
     metadata["scenario"] = args.scenario
     bundle = {"metadata": metadata, "rounds": history}
     with (run_dir / "metrics.json").open("w", encoding="utf-8") as handle:
-        json.dump(bundle, handle, indent=2, cls=JsonEncoder)
+        json.dump(bundle, handle, indent=2, cls=JsonEncoder, allow_nan=False)
     _write_csv(run_dir / "rounds.csv", history)
     summary = {
         **metadata,
@@ -195,7 +205,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
         "total_latency_s": sum(row["latency_round_s"] for row in history),
     }
     with (run_dir / "summary.json").open("w", encoding="utf-8") as handle:
-        json.dump(summary, handle, indent=2, cls=JsonEncoder)
+        json.dump(summary, handle, indent=2, cls=JsonEncoder, allow_nan=False)
     logger.info("complete artifacts=%s", run_dir.resolve())
     return run_dir
 

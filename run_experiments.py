@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 
@@ -17,6 +18,7 @@ SCALABILITY_METHODS = ("fedprox",) + HFL_METHODS
 COMPRESSION_METHODS = ("fedavg", "fedprox", "hfl-nocoop", "hfl-nearest")
 # Run the federated methods first; the centralized oracle is intentionally last.
 REAL_METHODS = ("fedavg", "fedprox") + HFL_METHODS + ("centralized",)
+REAL_DATASETS = ("SMD", "SMAP", "MSL")
 
 
 def parse_args() -> argparse.Namespace:
@@ -74,7 +76,11 @@ def _completed_run_path(args) -> Path:
 
     fogs = int(args.fogs if args.fogs is not None else max(1, args.sensors // 10))
     rho_s = 0.05 if args.rho_s is None else float(args.rho_s)
-    alpha = str(float(args.dirichlet_alpha))
+    alpha = (
+        "na"
+        if args.dirichlet_alpha is None
+        else str(float(args.dirichlet_alpha))
+    )
     return (
         args.output_root
         / args.scenario
@@ -87,21 +93,53 @@ def _completed_run_path(args) -> Path:
 
 
 def _is_completed(args) -> bool:
-    """A run is resumable only after its final summary has been written."""
+    """A run is resumable only when every recorded metric is finite."""
 
-    summary_path = _completed_run_path(args) / "summary.json"
+    run_path = _completed_run_path(args)
+    summary_path = run_path / "summary.json"
+    metrics_path = run_path / "metrics.json"
     try:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        bundle = json.loads(metrics_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
     final = summary.get("final", {})
-    return (
+    history = bundle.get("rounds", [])
+    finite_round_fields = (
+        "train_loss",
+        "f1",
+        "pa_f1",
+        "threshold",
+        "test_reconstruction_loss",
+        "e_cumulative_total_j",
+        "latency_cumulative_s",
+    )
+    finite_summary_fields = (
+        "best_f1",
+        "best_pa_f1",
+        "total_communication_energy_j",
+        "total_modelled_energy_j",
+        "total_latency_s",
+    )
+    structurally_complete = (
         summary.get("rounds") == args.rounds
-        and summary.get("dataset") == args.dataset.upper()
+        and str(summary.get("dataset", "")).upper() == str(args.dataset).upper()
         and summary.get("baseline") == args.baseline
         and summary.get("seed") == args.seed
         and final.get("round") == args.rounds
+        and len(history) == args.rounds
+        and bundle.get("metadata", {}).get("scenario") == args.scenario
     )
+    if not structurally_complete:
+        return False
+    values = [summary.get(field) for field in finite_summary_fields]
+    values.extend(
+        row.get(field) for row in history for field in finite_round_fields
+    )
+    try:
+        return all(math.isfinite(float(value)) for value in values)
+    except (TypeError, ValueError):
+        return False
 
 
 def _run_or_skip(cli: argparse.Namespace, args) -> None:
@@ -194,22 +232,24 @@ def run_real(cli: argparse.Namespace) -> None:
     """Fig. 8 and Table IV."""
 
     seeds = SEEDS[:1] if cli.quick else SEEDS
-    for dataset in ("SMAP", "MSL"):
-        for alpha in (0.1, 1.0e4):
-            for method in REAL_METHODS:
-                for seed in seeds:
-                    args = _base_args(cli, "real")
-                    args.dataset = dataset
-                    args.sensors = 100
-                    args.fogs = 10
-                    args.baseline = method
-                    centralized_threads = getattr(cli, "centralized_torch_threads", None)
-                    if method == "centralized" and centralized_threads:
-                        args.torch_threads = centralized_threads
-                    args.seed = seed
-                    args.dirichlet_alpha = alpha
-                    args.rounds = 2 if cli.quick else 30
-                    _run_or_skip(cli, args)
+    for dataset in REAL_DATASETS:
+        for method in REAL_METHODS:
+            for seed in seeds:
+                args = _base_args(cli, "real")
+                args.dataset = dataset
+                # The paper maps each benchmark's source entities (10 SMD
+                # machines, 55 SMAP channels, 27 MSL channels) onto the same
+                # N=100, M=10 physical topology.
+                args.sensors = 100
+                args.fogs = 10
+                args.baseline = method
+                centralized_threads = getattr(cli, "centralized_torch_threads", None)
+                if method == "centralized" and centralized_threads:
+                    args.torch_threads = centralized_threads
+                args.seed = seed
+                args.dirichlet_alpha = None
+                args.rounds = 2 if cli.quick else 30
+                _run_or_skip(cli, args)
 
 
 if __name__ == "__main__":

@@ -23,12 +23,16 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("results/paper"))
     args = parser.parse_args()
     runs, _ = load_runs(args.results, "real")
+    runs = runs[runs["alpha"].isna()]
     regimes = (
-        ("SMAP", 0.1, "SMAP\nα=0.1"),
-        ("SMAP", 1.0e4, "SMAP\nα≈10⁴"),
-        ("MSL", 0.1, "MSL\nα=0.1"),
-        ("MSL", 1.0e4, "MSL\nα≈10⁴"),
+        ("SMD", "SMD"),
+        ("SMAP", "SMAP"),
+        ("MSL", "MSL"),
     )
+    if runs.empty:
+        raise ValueError(
+            "Fig. 8 requires paper real-data runs with partition_alpha=None"
+        )
     methods = ordered_methods(runs)
     x = np.arange(len(regimes))
     width = 0.82 / max(1, len(methods))
@@ -39,11 +43,8 @@ def main() -> None:
         for axis, metric in zip(axes, ("pa_f1", "energy_j")):
             means = []
             deviations = []
-            for dataset, alpha, _ in regimes:
-                group = rows[
-                    (rows["dataset"] == dataset)
-                    & np.isclose(rows["alpha"].astype(float), alpha)
-                ][metric]
+            for dataset, _ in regimes:
+                group = rows[rows["dataset"] == dataset][metric]
                 means.append(float(group.mean()) if len(group) else 0.0)
                 deviations.append(
                     float(group.std(ddof=0)) if len(group) else 0.0
@@ -64,7 +65,7 @@ def main() -> None:
         yscale="log",
     )
     for axis in axes:
-        axis.set_xticks(x, [label for _, _, label in regimes])
+        axis.set_xticks(x, [label for _, label in regimes])
         axis.grid(axis="y", alpha=0.25)
     axes[0].legend(fontsize=7, ncol=2)
     save_figure(fig, args.output, "fig8_real_benchmarks")

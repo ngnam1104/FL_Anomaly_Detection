@@ -100,8 +100,30 @@ def _train_sensor_worker(task: dict) -> dict:
                     for name, parameter in model.named_parameters()
                 )
                 loss = loss + 0.5 * task["fedprox_mu"] * proximal
+            if not torch.isfinite(loss):
+                raise FloatingPointError(
+                    f"Non-finite local loss: sensor={sensor_id} "
+                    f"round={task['round_index']}"
+                )
             loss.backward()
+            gradient_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                max_norm=task["max_grad_norm"],
+                error_if_nonfinite=True,
+            )
+            if not torch.isfinite(gradient_norm):
+                raise FloatingPointError(
+                    f"Non-finite gradient: sensor={sensor_id} "
+                    f"round={task['round_index']}"
+                )
             optimizer.step()
+            if not all(
+                torch.isfinite(parameter).all() for parameter in model.parameters()
+            ):
+                raise FloatingPointError(
+                    f"Non-finite local model: sensor={sensor_id} "
+                    f"round={task['round_index']}"
+                )
             total_loss += float(loss.detach())
             batches += 1
     local_state = model.state_dict()
@@ -206,10 +228,12 @@ class AnomalyFLSimulator:
             "input_dim": self.data.input_dim,
             "hidden_dims": self.learning.HIDDEN_DIMS,
             "local_lr": self.learning.LOCAL_LR,
+            "max_grad_norm": self.learning.MAX_GRAD_NORM,
             "local_epochs": self.learning.LOCAL_EPOCHS,
             "batch_size": self.learning.LOCAL_BATCH_SIZE,
             "fedprox_mu": self.learning.FEDPROX_MU,
             "use_prox": self.baseline == "fedprox",
+            "round_index": round_index,
             "train_seed": self.seed * 1_000_003 + round_index * 10_007 + sensor_id,
         }
 
@@ -217,6 +241,10 @@ class AnomalyFLSimulator:
         sensor_id = raw_result["sensor_id"]
         delta_state = raw_result["delta_state"]
         delta_vector, _ = flatten_state(delta_state)
+        if not torch.isfinite(delta_vector).all():
+            raise FloatingPointError(
+                f"Non-finite update from sensor {sensor_id}"
+            )
         if compress_update and self.learning.RHO_S < 1.0:
             payload = self.compressors[sensor_id].compress(delta_vector)
             reconstructed_delta = unflatten_state(payload.decompress(), self.state_metadata)
@@ -285,10 +313,14 @@ class AnomalyFLSimulator:
         validation_errors = reconstruction_errors(
             self.global_model, self.data.validation_normal
         ).numpy()
+        if not np.isfinite(validation_errors).all():
+            raise FloatingPointError("Non-finite validation reconstruction errors")
         threshold = anomaly_threshold(
             validation_errors, self.learning.ANOMALY_PERCENTILE
         )
         test_errors = reconstruction_errors(self.global_model, self.data.test_x).numpy()
+        if not np.isfinite(test_errors).all():
+            raise FloatingPointError("Non-finite test reconstruction errors")
         metrics = anomaly_metrics(self.data.test_y, test_errors, threshold)
         metrics["threshold"] = threshold
         metrics["test_reconstruction_loss"] = float(np.mean(test_errors))
@@ -464,6 +496,10 @@ class AnomalyFLSimulator:
                     [result["delta"] for result in local_results],
                     [result["samples"] for result in local_results],
                 )
+            if not all(torch.isfinite(value).all() for value in new_state.values()):
+                raise FloatingPointError(
+                    f"Non-finite global state at round {round_index}"
+                )
             self.global_model.load_state_dict(new_state)
             eval_metrics = self._evaluate()
             comm_energy = e_s2f + e_f2f + e_f2g
@@ -602,9 +638,14 @@ class AnomalyFLSimulator:
             result = self._train_sensor(
                 0, state, round_index, compress_update=False
             )
-            self.global_model.load_state_dict(
-                apply_weighted_deltas(state, [result["delta"]], [result["samples"]])
+            new_state = apply_weighted_deltas(
+                state, [result["delta"]], [result["samples"]]
             )
+            if not all(torch.isfinite(value).all() for value in new_state.values()):
+                raise FloatingPointError(
+                    f"Non-finite centralized state at round {round_index}"
+                )
+            self.global_model.load_state_dict(new_state)
             metrics = self._evaluate()
             compute_energy = e_comp(result["flops"], self.energy.EPSILON_OP)
             compute_latency = comp_delay(

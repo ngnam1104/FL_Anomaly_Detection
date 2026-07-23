@@ -68,6 +68,9 @@ class LearningConfig:
     LOCAL_EPOCHS: int = 5
     LOCAL_BATCH_SIZE: int = 32
     LOCAL_LR: float = 0.01
+    # Keep the paper's SGD learning rate while preventing rare, very large
+    # standardized telemetry values from producing non-finite local updates.
+    MAX_GRAD_NORM: float = 5.0
     FEDPROX_MU: float = 0.02
     RHO_S: float = 0.05
     QUANTIZATION_BITS: int = 8

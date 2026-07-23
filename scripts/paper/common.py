@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import warnings
 from pathlib import Path
 
 os.environ.setdefault("MPLBACKEND", "Agg")
@@ -53,6 +55,25 @@ def load_runs(results_root: Path, scenario: str) -> tuple[pd.DataFrame, pd.DataF
             continue
         rounds = bundle.get("rounds", [])
         if not rounds:
+            continue
+        finite_fields = (
+            "train_loss",
+            "f1",
+            "pa_f1",
+            "e_cumulative_comm_j",
+            "e_cumulative_total_j",
+            "latency_cumulative_s",
+        )
+        try:
+            finite = all(
+                math.isfinite(float(row[field]))
+                for row in rounds
+                for field in finite_fields
+            )
+        except (KeyError, TypeError, ValueError):
+            finite = False
+        if not finite:
+            warnings.warn(f"Skipping non-finite or incomplete run: {path}")
             continue
         topology = metadata["topology"]
         final = rounds[-1]

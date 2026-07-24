@@ -6,7 +6,12 @@ import copy
 import logging
 import multiprocessing as mp
 import os
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    wait,
+)
 from dataclasses import asdict
 from typing import Dict
 
@@ -289,24 +294,50 @@ class AnomalyFLSimulator:
             for name, value in self.global_model.state_dict().items()
         }
         results = []
-        futures = {
-            pool.submit(
+        participant_iter = iter(participants)
+        futures = {}
+
+        def submit_next() -> bool:
+            try:
+                sensor_id = next(participant_iter)
+            except StopIteration:
+                return False
+            future = pool.submit(
                 _train_sensor_worker,
                 self._training_task(sensor_id, global_state, round_index),
-            ): sensor_id
-            for sensor_id in participants
-        }
-        for future in as_completed(futures):
-            result = self._finalise_local_update(future.result(), compress_update=True)
-            results.append(result)
-            self.log.debug(
-                "round=%d sensor=%d samples=%d loss=%.6f payload_bits=%d",
-                round_index,
-                result["sensor_id"],
-                result["samples"],
-                result["loss"],
-                result["payload_bits"],
             )
+            futures[future] = sensor_id
+            return True
+
+        # ProcessPoolExecutor serialises tensor storages through multiprocessing
+        # queues. Submitting every sensor at once can therefore exhaust Linux file
+        # descriptors even though only ``workers`` tasks execute concurrently.
+        # Keep the queue bounded while continuously replenishing completed work.
+        for _ in range(min(self.workers, len(participants))):
+            submit_next()
+
+        try:
+            while futures:
+                completed, _ = wait(futures, return_when=FIRST_COMPLETED)
+                for future in completed:
+                    futures.pop(future)
+                    result = self._finalise_local_update(
+                        future.result(), compress_update=True
+                    )
+                    results.append(result)
+                    self.log.debug(
+                        "round=%d sensor=%d samples=%d loss=%.6f payload_bits=%d",
+                        round_index,
+                        result["sensor_id"],
+                        result["samples"],
+                        result["loss"],
+                        result["payload_bits"],
+                    )
+                    submit_next()
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
         return sorted(results, key=lambda item: item["sensor_id"])
 
     def _evaluate(self) -> dict:

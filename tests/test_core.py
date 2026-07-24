@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+from concurrent.futures import Future
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -124,6 +126,57 @@ def test_local_sgd_stays_finite_with_real_benchmark_scale_outlier():
     )
     assert np.isfinite(result["loss"])
     assert all(torch.isfinite(value).all() for value in result["delta_state"].values())
+
+
+def test_local_training_limits_in_flight_tensor_tasks_to_worker_count():
+    class TrackedFuture(Future):
+        def __init__(self, owner, result):
+            super().__init__()
+            self.owner = owner
+            self.consumed = False
+            self.set_result(result)
+
+        def result(self, timeout=None):
+            if not self.consumed:
+                self.owner.outstanding -= 1
+                self.consumed = True
+            return super().result(timeout)
+
+    class ImmediatePool:
+        def __init__(self):
+            self.outstanding = 0
+            self.max_outstanding = 0
+
+        def submit(self, _function, task):
+            self.outstanding += 1
+            self.max_outstanding = max(self.max_outstanding, self.outstanding)
+            return TrackedFuture(
+                self,
+                {
+                    "sensor_id": task["sensor_id"],
+                    "samples": 1,
+                    "loss": 0.0,
+                    "payload_bits": 0,
+                },
+            )
+
+    simulator = object.__new__(AnomalyFLSimulator)
+    simulator.workers = 3
+    simulator.global_model = torch.nn.Linear(1, 1)
+    simulator.log = Mock()
+    simulator._training_task = (
+        lambda sensor_id, _global_state, _round_index: {"sensor_id": sensor_id}
+    )
+    simulator._finalise_local_update = (
+        lambda raw_result, compress_update: raw_result
+    )
+    pool = ImmediatePool()
+
+    results = simulator._parallel_local_training(list(range(20)), 1, pool)
+
+    assert [result["sensor_id"] for result in results] == list(range(20))
+    assert pool.max_outstanding == simulator.workers
+    assert pool.outstanding == 0
 
 
 def test_round_latency_uses_slowest_link_plus_compute():

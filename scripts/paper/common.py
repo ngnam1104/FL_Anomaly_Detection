@@ -106,6 +106,9 @@ def load_runs(results_root: Path, scenario: str) -> tuple[pd.DataFrame, pd.DataF
                 "e_sensor_upload_j": sum(
                     row["e_sensor_upload_j"] for row in rounds
                 ),
+                "e_failed_s2g_j": sum(
+                    row.get("e_failed_s2g_j", 0.0) for row in rounds
+                ),
                 "e_f2f_j": sum(row["e_f2f_j"] for row in rounds),
                 "e_f2g_j": sum(row["e_f2g_j"] for row in rounds),
             }

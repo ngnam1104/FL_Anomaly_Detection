@@ -202,6 +202,9 @@ def run_experiment(args: argparse.Namespace) -> Path:
         "best_pa_f1": max(row["pa_f1"] for row in history),
         "total_communication_energy_j": sum(row["e_round_comm_j"] for row in history),
         "total_modelled_energy_j": sum(row["e_round_total_j"] for row in history),
+        "total_failed_upload_energy_j": sum(
+            row.get("e_sensor_upload_failed_j", 0.0) for row in history
+        ),
         "total_latency_s": sum(row["latency_round_s"] for row in history),
     }
     with (run_dir / "summary.json").open("w", encoding="utf-8") as handle:

@@ -79,6 +79,7 @@ PY
 echo "paper_scenarios=scalability,compression,noniid,real"
 echo "real_datasets=SMD,SMAP,MSL seeds=42,43,44"
 echo "methods=centralized,fedavg,fedprox,hfl-nocoop,hfl-selective,hfl-nearest"
+echo "flat_failed_uploads=charge_one_payload_at_SL_MAX_without_rx_or_aggregation"
 echo "workers=${WORKERS} torch_threads_per_worker=${TORCH_THREADS} centralized_torch_threads=${CENTRALIZED_TORCH_THREADS} backend=process quick=${QUICK}"
 echo "raw_log=${MASTER_LOG}"
 
@@ -233,6 +234,12 @@ for path in root.rglob("summary.json"):
             "final_participation": final.get("participation"),
             "communication_energy_j": summary.get("total_communication_energy_j"),
             "total_modelled_energy_j": summary.get("total_modelled_energy_j"),
+            "failed_upload_energy_j": summary.get(
+                "total_failed_upload_energy_j", 0.0
+            ),
+            "final_failed_transmission_attempts": final.get(
+                "failed_transmission_attempts", 0
+            ),
             "total_latency_s": summary.get("total_latency_s"),
             "artifact_dir": str(path.parent),
         }

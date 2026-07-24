@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+import json
 from pathlib import Path
 
 import run_experiments
@@ -93,3 +94,58 @@ def test_ubuntu_setup_and_runner_have_separate_responsibilities():
     assert "scripts.prepare_benchmarks" not in runner
     assert "--dataset all" in setup
     assert not (root / "run_ubuntu.sh").exists()
+
+
+def test_resume_rejects_stale_flat_energy_accounting(tmp_path):
+    args = Namespace(
+        output_root=tmp_path,
+        scenario="scalability",
+        dataset="synthetic",
+        sensors=10,
+        fogs=1,
+        baseline="fedprox",
+        rho_s=0.05,
+        dirichlet_alpha=1.0,
+        seed=42,
+        rounds=2,
+    )
+    run_path = run_experiments._completed_run_path(args)
+    run_path.mkdir(parents=True)
+    rounds = [
+        {
+            "round": round_index,
+            "train_loss": 1.0,
+            "f1": 0.8,
+            "pa_f1": 0.8,
+            "threshold": 1.0,
+            "test_reconstruction_loss": 1.0,
+            "e_cumulative_total_j": float(round_index),
+            "latency_cumulative_s": float(round_index),
+        }
+        for round_index in (1, 2)
+    ]
+    summary = {
+        "rounds": 2,
+        "dataset": "synthetic",
+        "baseline": "fedprox",
+        "seed": 42,
+        "final": rounds[-1],
+        "best_f1": 0.8,
+        "best_pa_f1": 0.8,
+        "total_communication_energy_j": 1.0,
+        "total_modelled_energy_j": 2.0,
+        "total_latency_s": 2.0,
+    }
+    bundle = {"metadata": {"scenario": "scalability"}, "rounds": rounds}
+    (run_path / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    (run_path / "metrics.json").write_text(json.dumps(bundle), encoding="utf-8")
+
+    assert run_experiments._is_completed(args) is False
+
+    policy = run_experiments.FLAT_FAILED_UPLOAD_POLICY
+    summary["flat_failed_upload_policy"] = policy
+    bundle["metadata"]["flat_failed_upload_policy"] = policy
+    (run_path / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    (run_path / "metrics.json").write_text(json.dumps(bundle), encoding="utf-8")
+
+    assert run_experiments._is_completed(args) is True

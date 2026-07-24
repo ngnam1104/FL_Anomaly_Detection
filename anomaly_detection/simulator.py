@@ -56,6 +56,8 @@ BASELINES = (
     "hfl-nearest",
 )
 
+FLAT_FAILED_UPLOAD_POLICY = "slmax-one-payload-per-round-v1"
+
 
 def _configure_local_worker(torch_threads: int) -> None:
     """Limit each worker to one BLAS/PyTorch thread to avoid oversubscription."""
@@ -403,6 +405,22 @@ class AnomalyFLSimulator:
         )
         return tx, e_rx(bits, link.R_bps, self.energy.P_C_RX)
 
+    def _failed_flat_upload_energy(self, bits: int) -> float:
+        """Charge one capped-power upload attempt that never reaches the gateway."""
+
+        rate = shannon_capacity(
+            self.acoustic.BANDWIDTH, self.acoustic.TARGET_SNR
+        )
+        return e_tx(
+            bits,
+            rate,
+            self.acoustic.SL_MAX,
+            self.energy.ETA_EA,
+            self.energy.P_C_TX,
+            self.energy.RHO_WATER,
+            self.acoustic.SOUND_SPEED,
+        )
+
     def run(self, rounds: int) -> list[dict]:
         if self.baseline == "centralized":
             return self._run_centralized(rounds)
@@ -428,10 +446,17 @@ class AnomalyFLSimulator:
             ):
                 mobility = self.topology.step_mobile_fogs()
             graph = build_feasibility_graph(self.topology, self.acoustic)
+            eligible_sensors = [
+                sensor_id
+                for sensor_id in range(self.topology.N)
+                if self.batteries[sensor_id] > self.energy.E_MIN
+                and len(self.data.sensor_train[sensor_id]) > 0
+            ]
             if self.is_hierarchical:
                 association = nearest_feasible_association(self.topology, graph)
                 clusters = build_clusters(association, self.topology.M)
                 participants = sorted(association)
+                failed_flat_uploads: list[int] = []
             else:
                 participants = flat_feasible_sensors(self.topology, graph)
                 association = {sensor_id: -1 for sensor_id in participants}
@@ -439,9 +464,15 @@ class AnomalyFLSimulator:
             participants = [
                 sensor_id
                 for sensor_id in participants
-                if self.batteries[sensor_id] > self.energy.E_MIN
-                and len(self.data.sensor_train[sensor_id]) > 0
+                if sensor_id in eligible_sensors
             ]
+            if not self.is_hierarchical:
+                participant_set = set(participants)
+                failed_flat_uploads = [
+                    sensor_id
+                    for sensor_id in eligible_sensors
+                    if sensor_id not in participant_set
+                ]
             if not participants:
                 raise RuntimeError(f"No feasible participants in round {round_index}")
             self.log.debug(
@@ -491,6 +522,16 @@ class AnomalyFLSimulator:
                         self.energy.FLOPS_PER_CYCLE,
                     ),
                 )
+
+            failed_payload_bits = int(local_results[0]["payload_bits"])
+            e_failed_s2g = 0.0
+            if failed_flat_uploads:
+                failed_attempt_j = self._failed_flat_upload_energy(
+                    failed_payload_bits
+                )
+                e_failed_s2g = failed_attempt_j * len(failed_flat_uploads)
+                for sensor_id in failed_flat_uploads:
+                    self.batteries[sensor_id] -= failed_attempt_j
 
             cooperation: Dict[int, int] = {}
             if self.is_hierarchical:
@@ -567,7 +608,7 @@ class AnomalyFLSimulator:
                 )
             self.global_model.load_state_dict(new_state)
             eval_metrics = self._evaluate()
-            comm_energy = e_s2f + e_f2f + e_f2g
+            comm_energy = e_s2f + e_failed_s2g + e_f2f + e_f2g
             total_energy = comm_energy + e_rx_total + e_compute
             latency = round_latency(link_delays, max_compute_delay)
             cumulative_comm_energy += comm_energy
@@ -585,13 +626,25 @@ class AnomalyFLSimulator:
                 **eval_metrics,
                 "participants": len(participants),
                 "participation": len(participants) / self.topology.N,
+                "transmission_attempts": len(participants) + len(failed_flat_uploads),
+                "failed_transmission_attempts": len(failed_flat_uploads),
+                "failed_transmission_fraction": (
+                    len(failed_flat_uploads)
+                    / max(1, len(participants) + len(failed_flat_uploads))
+                ),
                 "e_round_comm_j": comm_energy,
                 "e_round_rx_j": e_rx_total,
                 "e_round_compute_j": e_compute,
                 "e_round_total_j": total_energy,
-                "e_sensor_upload_j": e_s2f,
+                "e_sensor_upload_j": e_s2f + e_failed_s2g,
+                "e_sensor_upload_success_j": e_s2f,
+                "e_sensor_upload_failed_j": e_failed_s2g,
                 "e_s2f_j": e_s2f if self.is_hierarchical else 0.0,
-                "e_s2g_j": 0.0 if self.is_hierarchical else e_s2f,
+                "e_s2g_j": (
+                    0.0 if self.is_hierarchical else e_s2f + e_failed_s2g
+                ),
+                "e_s2g_success_j": 0.0 if self.is_hierarchical else e_s2f,
+                "e_failed_s2g_j": e_failed_s2g,
                 "e_f2f_j": e_f2f,
                 "e_f2g_j": e_f2g,
                 "e_cumulative_comm_j": cumulative_comm_energy,
@@ -613,10 +666,12 @@ class AnomalyFLSimulator:
             }
             self.history.append(record)
             self.log.debug(
-                "round=%d energy_breakdown s2f=%.6f f2f=%.6f f2g=%.6f "
+                "round=%d energy_breakdown s2f=%.6f failed_s2g=%.6f "
+                "f2f=%.6f f2g=%.6f "
                 "rx=%.6f compute=%.6f total=%.6f threshold=%.8f",
                 round_index,
                 e_s2f,
+                e_failed_s2g,
                 e_f2f,
                 e_f2g,
                 e_rx_total,
@@ -627,7 +682,7 @@ class AnomalyFLSimulator:
             self.log.info(
                 "round=%d/%d method=%s participants=%d/%d loss=%.6f "
                 "f1=%.4f pa_f1=%.4f energy_total=%.4fJ "
-                "energy_comm=%.4fJ latency=%.4fs coop=%d",
+                "energy_comm=%.4fJ latency=%.4fs coop=%d failed_tx=%d",
                 round_index,
                 rounds,
                 self.baseline,
@@ -640,6 +695,7 @@ class AnomalyFLSimulator:
                 comm_energy,
                 latency,
                 len(cooperation),
+                len(failed_flat_uploads),
             )
         return self.history
 
@@ -736,13 +792,20 @@ class AnomalyFLSimulator:
                 **metrics,
                 "participants": self.topology.N,
                 "participation": 1.0,
+                "transmission_attempts": self.topology.N if round_index == 1 else 0,
+                "failed_transmission_attempts": 0,
+                "failed_transmission_fraction": 0.0,
                 "e_round_comm_j": round_comm_energy,
                 "e_round_rx_j": round_rx_energy,
                 "e_round_compute_j": compute_energy,
                 "e_round_total_j": round_total_energy,
                 "e_sensor_upload_j": round_comm_energy,
+                "e_sensor_upload_success_j": round_comm_energy,
+                "e_sensor_upload_failed_j": 0.0,
                 "e_s2f_j": 0.0,
                 "e_s2g_j": round_comm_energy,
+                "e_s2g_success_j": round_comm_energy,
+                "e_failed_s2g_j": 0.0,
                 "e_f2f_j": 0.0,
                 "e_f2g_j": 0.0,
                 "e_cumulative_comm_j": cumulative_comm_energy,
@@ -792,6 +855,18 @@ class AnomalyFLSimulator:
             "data_details": self.data.details,
             "centralized_oracle_unconstrained": self.baseline == "centralized",
             "centralized_source_cap_violations": self.centralized_cap_violations,
+            "flat_failed_upload_policy": FLAT_FAILED_UPLOAD_POLICY,
+            "flat_failed_upload_energy_model": {
+                "applies_to": ["fedavg", "fedprox"],
+                "source_level_db": self.acoustic.SL_MAX,
+                "attempt_rate_bps": shannon_capacity(
+                    self.acoustic.BANDWIDTH, self.acoustic.TARGET_SNR
+                ),
+                "same_payload_as_successful_upload": True,
+                "receiver_energy_charged": False,
+                "latency_charged": False,
+                "local_compute_charged": False,
+            },
             "topology": topology_stats(self.topology, graph),
             "network_config": asdict(self.net),
             "acoustic_config": asdict(self.acoustic),

@@ -480,3 +480,60 @@ def test_centralized_oracle_logs_raw_upload_energy_once():
         > history[-1]["e_cumulative_comm_j"]
     )
     assert simulator.metadata()["centralized_oracle_unconstrained"] is True
+
+
+def test_flat_failed_gateway_uploads_consume_capped_tx_energy():
+    net = copy.deepcopy(network_cfg)
+    learn = copy.deepcopy(learning_cfg)
+    energy = copy.deepcopy(energy_cfg)
+    net.N_SENSORS = 2
+    net.M_FOGS = 1
+    net.MOBILITY_ENABLED = False
+    learn.LOCAL_EPOCHS = 1
+    learn.LOCAL_BATCH_SIZE = 8
+    data = make_synthetic(
+        2,
+        samples_per_sensor=8,
+        validation_samples=16,
+        test_samples=32,
+        seed=29,
+    )
+    simulator = AnomalyFLSimulator(
+        data,
+        net,
+        acoustic_cfg,
+        energy,
+        learn,
+        baseline="fedavg",
+        seed=29,
+        workers=1,
+        parallel_backend="thread",
+    )
+    simulator.topology.sensor_positions = np.array(
+        [
+            [1000.0, 1000.0, 500.0],
+            [0.0, 0.0, 1000.0],
+        ]
+    )
+
+    record = simulator.run(1)[0]
+    expected_failed_tx = e_tx(
+        record["payload_sensor_mean_bits"],
+        shannon_capacity(acoustic_cfg.BANDWIDTH, acoustic_cfg.TARGET_SNR),
+        acoustic_cfg.SL_MAX,
+        energy.ETA_EA,
+        energy.P_C_TX,
+        energy.RHO_WATER,
+        acoustic_cfg.SOUND_SPEED,
+    )
+
+    assert record["participants"] == 1
+    assert record["transmission_attempts"] == 2
+    assert record["failed_transmission_attempts"] == 1
+    assert record["failed_transmission_fraction"] == pytest.approx(0.5)
+    assert record["e_failed_s2g_j"] == pytest.approx(expected_failed_tx)
+    assert record["e_sensor_upload_failed_j"] == pytest.approx(expected_failed_tx)
+    assert record["e_s2g_success_j"] > 0.0
+    assert record["e_s2g_j"] == pytest.approx(
+        record["e_s2g_success_j"] + record["e_failed_s2g_j"]
+    )

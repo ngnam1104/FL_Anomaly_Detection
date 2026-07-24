@@ -10,6 +10,7 @@ from pathlib import Path
 
 from main import parse_args as parse_single_args
 from main import run_experiment
+from anomaly_detection.simulator import FLAT_FAILED_UPLOAD_POLICY
 
 
 SEEDS = (42, 43, 44)
@@ -130,6 +131,14 @@ def _is_completed(args) -> bool:
         and len(history) == args.rounds
         and bundle.get("metadata", {}).get("scenario") == args.scenario
     )
+    if args.baseline in {"fedavg", "fedprox"}:
+        structurally_complete = (
+            structurally_complete
+            and summary.get("flat_failed_upload_policy")
+            == FLAT_FAILED_UPLOAD_POLICY
+            and bundle.get("metadata", {}).get("flat_failed_upload_policy")
+            == FLAT_FAILED_UPLOAD_POLICY
+        )
     if not structurally_complete:
         return False
     values = [summary.get(field) for field in finite_summary_fields]

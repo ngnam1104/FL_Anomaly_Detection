@@ -104,6 +104,17 @@ def _write_fixture(root: Path) -> None:
                     sensors=sensors,
                     seed=seed,
                 )
+    for sensors in (150, 200):
+        for method in ("centralized", "fedavg"):
+            for seed in (42, 43):
+                _write_run(
+                    root,
+                    scenario="convergence",
+                    dataset="synthetic",
+                    method=method,
+                    sensors=sensors,
+                    seed=seed,
+                )
     for method in ("fedavg", "fedprox", "hfl-nocoop", "hfl-nearest"):
         for rho_s in (0.05, 1.0):
             for seed in (42, 43):

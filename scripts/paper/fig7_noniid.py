@@ -5,8 +5,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import numpy as np
-
 from scripts.paper.common import (
     METHOD_COLORS,
     METHOD_LABELS,
@@ -24,14 +22,16 @@ def main() -> None:
     args = parser.parse_args()
     runs, _ = load_runs(args.results, "noniid")
     alpha_order = (0.1, 1.0e4)
-    alpha_labels = ("Strong non-IID\nα=0.1", "Near-IID\nα=10⁴")
+    alpha_labels = (
+        "Strong non-IID\n" + r"$\alpha=0.1$",
+        "Near-IID\n" + r"$\alpha=10^4$",
+    )
+    x = (0, 1)
     fig, axes = plt.subplots(1, 2, figsize=(9.4, 3.9))
     methods = ordered_methods(runs)
-    x = np.arange(len(alpha_order))
-    width = 0.8 / max(1, len(methods))
+    markers = ("o", "s", "^", "D", "P", "X")
     for method_index, method in enumerate(methods):
         rows = runs[runs["method"] == method]
-        offset = (method_index - (len(methods) - 1) / 2) * width
         for axis, metric in zip(axes, ("f1", "energy_j")):
             stats = (
                 rows.groupby("alpha")[metric]
@@ -39,12 +39,14 @@ def main() -> None:
                 .reindex(alpha_order)
                 .fillna(0.0)
             )
-            axis.bar(
-                x + offset,
+            axis.errorbar(
+                x,
                 stats["mean"],
-                width,
                 yerr=stats["std"],
-                capsize=2,
+                marker=markers[method_index % len(markers)],
+                linewidth=1.8,
+                markersize=5,
+                capsize=3,
                 color=METHOD_COLORS[method],
                 label=METHOD_LABELS[method],
             )
@@ -56,7 +58,8 @@ def main() -> None:
     )
     for axis in axes:
         axis.set_xticks(x, alpha_labels)
-        axis.grid(axis="y", alpha=0.25)
+        axis.set_xlabel("Dirichlet concentration")
+        axis.grid(alpha=0.25)
     axes[0].legend(fontsize=7)
     save_figure(fig, args.output, "fig7_noniid")
 

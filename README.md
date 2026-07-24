@@ -49,8 +49,9 @@ Mỗi dataset chạy tuần tự đúng thứ tự:
 5. HFL-Selective
 6. HFL-Nearest
 
-Full matrix gồm 150 run:
+Full matrix gồm 162 run:
 
+- convergence extras cho Fig. 4: `2 N × 2 methods × 3 seeds = 12`;
 - scalability: `4 N × 4 methods × 3 seeds = 48`;
 - compression: `4 methods × 2 ρ × 3 seeds = 24`;
 - non-IID: `4 methods × 2 α × 3 seeds = 24`;
@@ -88,15 +89,15 @@ INSTALL_SYSTEM_VENV=1 bash setup_ubuntu.sh
 
 ### 2. Chạy các kịch bản
 
-Nên chạy smoke test trước. Quick mode đi qua cả bốn scenario, ba real dataset
+Nên chạy smoke test trước. Quick mode đi qua cả năm scenario, ba real dataset
 và sáu baseline, nhưng chỉ dùng seed 42, hai round và ma trận synthetic rút gọn
-(`23 runs`):
+(`25 runs`):
 
 ```bash
 QUICK=1 WORKERS=4 bash run_scenarios.sh
 ```
 
-Chạy đủ 150 run, kiểm tra tính đầy đủ/hữu hạn của kết quả, sau đó sinh toàn bộ
+Chạy đủ 162 run, kiểm tra tính đầy đủ/hữu hạn của kết quả, sau đó sinh toàn bộ
 Fig. 4-8 và Table II-IV:
 
 ```bash

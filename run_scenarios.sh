@@ -76,7 +76,7 @@ assert observed == expected
 print(f"Setup manifest validated: {path.resolve()}")
 PY
 
-echo "paper_scenarios=scalability,compression,noniid,real"
+echo "paper_scenarios=convergence,scalability,compression,noniid,real"
 echo "real_datasets=SMD,SMAP,MSL seeds=42,43,44"
 echo "methods=centralized,fedavg,fedprox,hfl-nocoop,hfl-selective,hfl-nearest"
 echo "flat_failed_uploads=charge_one_payload_at_SL_MAX_without_rx_or_aggregation"
@@ -125,6 +125,14 @@ seeds = (42,) if quick else (42, 43, 44)
 synthetic_rounds = 2 if quick else 20
 real_rounds = 2 if quick else 30
 expected = set()
+
+convergence_sizes = (150,) if quick else (150, 200)
+for sensors in convergence_sizes:
+    for method in ("centralized", "fedavg"):
+        for seed in seeds:
+            expected.add(
+                ("convergence", "synthetic", sensors, method, seed, 0.05, 1.0, synthetic_rounds)
+            )
 
 scale_sizes = (50,) if quick else (50, 100, 150, 200)
 scale_methods = (

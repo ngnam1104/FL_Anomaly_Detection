@@ -57,13 +57,15 @@ def test_quick_all_suite_covers_every_paper_scenario(tmp_path, monkeypatch):
         resume=False,
     )
 
+    run_experiments.run_convergence(cli)
     run_experiments.run_scalability(cli)
     run_experiments.run_compression(cli)
     run_experiments.run_noniid(cli)
     run_experiments.run_real(cli)
 
-    assert len(captured) == 23
+    assert len(captured) == 25
     assert {args.scenario for args in captured} == {
+        "convergence",
         "scalability",
         "compression",
         "noniid",

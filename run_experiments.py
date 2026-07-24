@@ -16,6 +16,7 @@ from anomaly_detection.simulator import FLAT_FAILED_UPLOAD_POLICY
 SEEDS = (42, 43, 44)
 HFL_METHODS = ("hfl-nocoop", "hfl-selective", "hfl-nearest")
 SCALABILITY_METHODS = ("fedprox",) + HFL_METHODS
+CONVERGENCE_EXTRA_METHODS = ("centralized", "fedavg")
 COMPRESSION_METHODS = ("fedavg", "fedprox", "hfl-nocoop", "hfl-nearest")
 # Run the federated methods first; the centralized oracle is intentionally last.
 REAL_METHODS = ("fedavg", "fedprox") + HFL_METHODS + ("centralized",)
@@ -26,7 +27,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run paper experiment scenarios")
     parser.add_argument(
         "--suite",
-        choices=("scalability", "compression", "noniid", "real", "all"),
+        choices=(
+            "convergence",
+            "scalability",
+            "compression",
+            "noniid",
+            "real",
+            "all",
+        ),
         default="scalability",
     )
     parser.add_argument("--data-root", default="datasets")
@@ -178,7 +186,28 @@ def _run_synthetic(
     args.samples_per_sensor = 24 if cli.quick else 128
     args.rho_s = rho_s
     args.dirichlet_alpha = alpha
+    if method == "centralized":
+        centralized_threads = getattr(cli, "centralized_torch_threads", None)
+        if centralized_threads:
+            args.torch_threads = centralized_threads
     _run_or_skip(cli, args)
+
+
+def run_convergence(cli: argparse.Namespace) -> None:
+    """Fig. 4 additions: Centralised and FedAvg at N={150, 200}."""
+
+    seeds = SEEDS[:1] if cli.quick else SEEDS
+    scales = (150,) if cli.quick else (150, 200)
+    for sensors in scales:
+        for method in CONVERGENCE_EXTRA_METHODS:
+            for seed in seeds:
+                _run_synthetic(
+                    cli,
+                    scenario="convergence",
+                    sensors=sensors,
+                    method=method,
+                    seed=seed,
+                )
 
 
 def run_scalability(cli: argparse.Namespace) -> None:
@@ -263,6 +292,8 @@ def run_real(cli: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     cli_args = parse_args()
+    if cli_args.suite in {"convergence", "all"}:
+        run_convergence(cli_args)
     if cli_args.suite in {"scalability", "all"}:
         run_scalability(cli_args)
     if cli_args.suite in {"compression", "all"}:

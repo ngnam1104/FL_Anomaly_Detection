@@ -125,10 +125,13 @@ def test_local_sgd_stays_finite_with_real_benchmark_scale_outlier():
         }
     )
     assert np.isfinite(result["loss"])
-    assert all(torch.isfinite(value).all() for value in result["delta_state"].values())
+    assert all(
+        isinstance(value, np.ndarray) and np.isfinite(value).all()
+        for value in result["delta_state"].values()
+    )
 
 
-def test_local_training_limits_in_flight_tensor_tasks_to_worker_count():
+def test_local_training_limits_in_flight_numpy_tasks_to_worker_count():
     class TrackedFuture(Future):
         def __init__(self, owner, result):
             super().__init__()
@@ -148,6 +151,11 @@ def test_local_training_limits_in_flight_tensor_tasks_to_worker_count():
             self.max_outstanding = 0
 
         def submit(self, _function, task):
+            assert isinstance(task["samples"], np.ndarray)
+            assert all(
+                isinstance(value, np.ndarray)
+                for value in task["global_state"].values()
+            )
             self.outstanding += 1
             self.max_outstanding = max(self.max_outstanding, self.outstanding)
             return TrackedFuture(
@@ -165,7 +173,11 @@ def test_local_training_limits_in_flight_tensor_tasks_to_worker_count():
     simulator.global_model = torch.nn.Linear(1, 1)
     simulator.log = Mock()
     simulator._training_task = (
-        lambda sensor_id, _global_state, _round_index: {"sensor_id": sensor_id}
+        lambda sensor_id, global_state, _round_index: {
+            "sensor_id": sensor_id,
+            "global_state": global_state,
+            "samples": np.zeros((1, 1), dtype=np.float32),
+        }
     )
     simulator._finalise_local_update = (
         lambda raw_result, compress_update: raw_result

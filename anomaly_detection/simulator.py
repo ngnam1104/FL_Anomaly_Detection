@@ -76,8 +76,14 @@ def _train_sensor_worker(task: dict) -> dict:
     """
 
     sensor_id = task["sensor_id"]
-    global_state = task["global_state"]
-    samples = task["samples"]
+    # Keep PyTorch tensor storages out of ProcessPoolExecutor queues. PyTorch's
+    # default Linux reduction sends a Unix file descriptor for every storage;
+    # long experiment suites can eventually exhaust or lose those descriptors.
+    global_state = {
+        name: torch.from_numpy(np.asarray(value)).clone()
+        for name, value in task["global_state"].items()
+    }
+    samples = torch.from_numpy(np.asarray(task["samples"])).clone()
     model = Autoencoder(task["input_dim"], task["hidden_dims"])
     model.load_state_dict(global_state)
     model.train()
@@ -133,7 +139,12 @@ def _train_sensor_worker(task: dict) -> dict:
             batches += 1
     local_state = model.state_dict()
     delta_state = {
-        name: local_state[name].detach().cpu() - global_state[name].detach().cpu()
+        name: np.ascontiguousarray(
+            (
+                local_state[name].detach().cpu()
+                - global_state[name].detach().cpu()
+            ).numpy()
+        )
         for name in global_state
     }
     layer_ops = sum(
@@ -224,12 +235,29 @@ class AnomalyFLSimulator:
         return self._finalise_local_update(raw_result, compress_update)
 
     def _training_task(
-        self, sensor_id: int, global_state: Dict[str, torch.Tensor], round_index: int
+        self,
+        sensor_id: int,
+        global_state: Dict[str, torch.Tensor | np.ndarray],
+        round_index: int,
     ) -> dict:
+        serialised_state = {
+            name: np.ascontiguousarray(
+                value.detach().cpu().numpy()
+                if torch.is_tensor(value)
+                else np.asarray(value)
+            )
+            for name, value in global_state.items()
+        }
+        samples = self.data.sensor_train[sensor_id]
+        serialised_samples = np.ascontiguousarray(
+            samples.detach().cpu().numpy()
+            if torch.is_tensor(samples)
+            else np.asarray(samples)
+        )
         return {
             "sensor_id": sensor_id,
-            "global_state": global_state,
-            "samples": self.data.sensor_train[sensor_id],
+            "global_state": serialised_state,
+            "samples": serialised_samples,
             "input_dim": self.data.input_dim,
             "hidden_dims": self.learning.HIDDEN_DIMS,
             "local_lr": self.learning.LOCAL_LR,
@@ -244,7 +272,14 @@ class AnomalyFLSimulator:
 
     def _finalise_local_update(self, raw_result: dict, compress_update: bool) -> dict:
         sensor_id = raw_result["sensor_id"]
-        delta_state = raw_result["delta_state"]
+        delta_state = {
+            name: (
+                value.detach().cpu()
+                if torch.is_tensor(value)
+                else torch.from_numpy(np.asarray(value)).clone()
+            )
+            for name, value in raw_result["delta_state"].items()
+        }
         delta_vector, _ = flatten_state(delta_state)
         if not torch.isfinite(delta_vector).all():
             raise FloatingPointError(
@@ -290,7 +325,7 @@ class AnomalyFLSimulator:
         self, participants: list[int], round_index: int, pool
     ) -> list[dict]:
         global_state = {
-            name: value.detach().cpu().clone()
+            name: np.ascontiguousarray(value.detach().cpu().numpy())
             for name, value in self.global_model.state_dict().items()
         }
         results = []
@@ -309,10 +344,9 @@ class AnomalyFLSimulator:
             futures[future] = sensor_id
             return True
 
-        # ProcessPoolExecutor serialises tensor storages through multiprocessing
-        # queues. Submitting every sensor at once can therefore exhaust Linux file
-        # descriptors even though only ``workers`` tasks execute concurrently.
-        # Keep the queue bounded while continuously replenishing completed work.
+        # Bound the queue as a second line of defence and continuously replenish
+        # completed work. The payload itself contains only NumPy arrays, so the
+        # queue never invokes PyTorch's Unix file-descriptor resource sharer.
         for _ in range(min(self.workers, len(participants))):
             submit_next()
 
